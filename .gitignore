@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.expo/
+.omo/
+.superpowers/
+.impeccable/
+.cursor/
+.codegraph
+.DS_Store

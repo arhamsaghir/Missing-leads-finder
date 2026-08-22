@@ -1,0 +1,407 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: #f5f5f5;
+  color: #1a1a1a;
+  line-height: 1.5;
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.app-header {
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.input-section {
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.input-group {
+  margin-bottom: 16px;
+}
+
+.input-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: #333;
+}
+
+.input-group textarea {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 140px;
+}
+
+.input-group textarea:focus {
+  outline: none;
+  border-color: #0066cc;
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.15);
+}
+
+.file-input {
+  margin-top: 8px;
+}
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+  margin-top: 16px;
+}
+
+.controls-row .input-group {
+  flex: 1;
+  min-width: 200px;
+}
+
+.controls-row .input-group input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.controls-row .input-group input:focus {
+  outline: none;
+  border-color: #0066cc;
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.15);
+}
+
+.button-group {
+  display: flex;
+  gap: 12px;
+}
+
+.btn-primary, .btn-secondary, .btn-copy {
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.15s, transform 0.05s;
+}
+
+.btn-primary {
+  background: #0066cc;
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #0052a3;
+}
+
+.btn-primary:active {
+  transform: scale(0.98);
+}
+
+.btn-secondary {
+  background: #f0f0f0;
+  color: #333;
+  border: 1px solid #ddd;
+}
+
+.btn-secondary:hover {
+  background: #e0e0e0;
+}
+
+.btn-copy {
+  background: #f0f0f0;
+  color: #333;
+  border: 1px solid #ddd;
+  font-size: 0.75rem;
+  padding: 6px 12px;
+}
+
+.btn-copy:hover {
+  background: #e0e0e0;
+}
+
+.messages {
+  margin-top: 16px;
+  padding: 12px;
+  background: #fff8f0;
+  border: 1px solid #ffe0b2;
+  border-radius: 6px;
+}
+
+.messages .error {
+  color: #c62828;
+  margin-bottom: 4px;
+}
+
+.messages .warning {
+  color: #ef6c00;
+  margin-bottom: 4px;
+}
+
+.report-section, .templates-section {
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.report-section h2, .templates-section h2 {
+  margin: 0 0 16px;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.templates-note {
+  margin: 0 0 16px;
+  font-size: 0.8rem;
+  color: #666;
+  font-style: italic;
+}
+
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.card {
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.card-label {
+  display: block;
+  font-size: 0.8rem;
+  color: #666;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.card-value {
+  display: block;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: 4px;
+}
+
+.card-value.estimated {
+  color: #c62828;
+}
+
+.card-value.confirmed {
+  color: #2e7d32;
+}
+
+.card-note {
+  display: block;
+  font-size: 0.7rem;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.metric {
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+
+.metric-value {
+  display: block;
+  font-size: 2rem;
+  font-weight: 700;
+  color: #0066cc;
+}
+
+.metric-label {
+  display: block;
+  font-size: 0.75rem;
+  color: #666;
+  margin-top: 4px;
+}
+
+.lead-table-container {
+  overflow-x: auto;
+}
+
+.lead-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.lead-table th,
+.lead-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.lead-table th {
+  background: #fafafa;
+  font-weight: 600;
+  color: #333;
+  white-space: nowrap;
+}
+
+.lead-table tr:hover td {
+  background: #fafafa;
+}
+
+.status-new { color: #1565c0; }
+.status-contacted { color: #ef6c00; }
+.status-qualified { color: #6a1b9a; }
+.status-booked { color: #2e7d32; }
+.status-lost { color: #c62828; }
+.status-recovered { color: #2e7d32; }
+.status-won { color: #2e7d32; }
+
+.leaks-badge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.leak-tag {
+  background: #ffebee;
+  color: #c62828;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.65rem;
+  font-weight: 500;
+}
+
+.no-leaks {
+  color: #999;
+  font-style: italic;
+}
+
+.templates-section {
+  margin-top: 24px;
+}
+
+.template-card {
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.template-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eee;
+}
+
+.template-lead {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.template-leaks {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.template-item {
+  margin-bottom: 16px;
+}
+
+.template-type {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #666;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.template-text {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  background: white;
+  resize: vertical;
+  min-height: 100px;
+}
+
+.template-text:focus {
+  outline: none;
+  border-color: #0066cc;
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.15);
+}
+
+@media (max-width: 768px) {
+  .app {
+    padding: 16px;
+  }
+  
+  .controls-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .button-group {
+    flex-direction: column;
+  }
+  
+  .btn-primary, .btn-secondary {
+    width: 100%;
+  }
+}

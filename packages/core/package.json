@@ -1,0 +1,37 @@
+{
+  "name": "@missed-lead/core",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./parser": {
+      "import": "./dist/parser.js",
+      "require": "./dist/parser.js",
+      "types": "./dist/parser.d.ts"
+    },
+    "./leaks": {
+      "import": "./dist/leaks.js",
+      "require": "./dist/leaks.js",
+      "types": "./dist/leaks.d.ts"
+    },
+    "./revenue": {
+      "import": "./dist/revenue.js",
+      "require": "./dist/revenue.js",
+      "types": "./dist/revenue.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "@missed-lead/ui",
+  "version": "1.0.0",
+  "description": "Tamagui universal design system for Missed Lead Revenue Finder",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./components": {
+      "import": "./dist/components/index.mjs",
+      "require": "./dist/components/index.js",
+      "types": "./dist/components/index.d.ts"
+    },
+    "./hooks": {
+      "import": "./dist/hooks/index.mjs",
+      "require": "./dist/hooks/index.js",
+      "types": "./dist/hooks/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts,.tsx"
+  },
+  "peerDependencies": {
+    "@tamagui/config": "^1.100.0",
+    "@tamagui/core": "^1.100.0",
+    "react": "^18.2.0 || ^19.0.0",
+    "react-native": "^0.74.0 || ^0.75.0 || ^0.76.0 || ^0.86.0",
+    "tamagui": "^1.100.0"
+  },
+  "devDependencies": {
+    "@tamagui/animations-moti": "^1.100.0",
+    "@tamagui/animations-react-native": "^1.100.0",
+    "@tamagui/config": "^1.100.0",
+    "@tamagui/core": "^1.100.0",
+    "@tamagui/font-inter": "^1.100.0",
+    "@tamagui/shorthands": "^1.100.0",
+    "@tamagui/themes": "^1.100.0",
+    "@types/react": "^19.0.0",
+    "@types/react-native": "^0.73.0",
+    "tamagui": "^1.100.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.10"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

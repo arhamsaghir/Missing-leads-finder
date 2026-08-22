@@ -7,3 +7,4 @@ dist/
 .cursor/
 .codegraph
 .DS_Store
+.git.broken.nosync/

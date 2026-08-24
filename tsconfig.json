@@ -5,9 +5,7 @@
     "types": [
       "vitest/globals"
     ],
-    "sourceMap": true,
-    "declaration": true,
-    "declarationMap": true,
+    "noEmit": true,
     "noUncheckedIndexedAccess": true,
     "strict": true,
     "jsx": "react-jsx",

@@ -5,11 +5,21 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
-    "build:packages": "npm run build --workspace @missed-lead/core",
+    "build:packages": "npm run build --workspace @missed-lead/core && npm run build --workspace @missed-lead/db",
     "build": "npm run build:packages && tsc && vite build",
+    "typecheck": "npm run build:packages && tsc && tsc --noEmit -p api/tsconfig.json",
     "preview": "vite preview",
     "pretest": "npm run build:packages",
-    "test": "vitest"
+    "test": "vitest run",
+    "test:core": "npm run test --workspace @missed-lead/core",
+    "test:unit": "npm run test && npm run test:core",
+    "test:api": "cd api && vitest run",
+    "test:db": "npm run test --workspace @missed-lead/db",
+    "test:integration": "npm run test:db && npm run test:api",
+    "test:all": "npm run test:unit && npm run test:integration",
+    "supabase:start": "supabase start",
+    "supabase:stop": "supabase stop",
+    "db:migrate": "npm run db:migrate --workspace @missed-lead/db"
   },
   "keywords": [],
   "author": "",
@@ -68,6 +78,7 @@
     "@tamagui/use-event": "^1.144.4",
     "@tamagui/use-presence": "^1.144.4",
     "@tamagui/web": "1.144.4",
+    "jose": "^6.2.10",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "tamagui": "1.144.4"

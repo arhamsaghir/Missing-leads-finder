@@ -5,8 +5,10 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build:packages": "npm run build --workspace @missed-lead/core",
+    "build": "npm run build:packages && tsc && vite build",
     "preview": "vite preview",
+    "pretest": "npm run build:packages",
     "test": "vitest"
   },
   "keywords": [],

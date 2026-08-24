@@ -9,6 +9,14 @@ dist/
 # tool output
 graphify-out/
 
+# compiled output emitted next to sources by `tsc` (src/App.js, src/*.d.ts, ...).
+# src/css.d.ts is hand-written and tracked — negated below.
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
+src/**/*.d.ts.map
+!src/css.d.ts
+
 .expo/
 .omo/
 .superpowers/

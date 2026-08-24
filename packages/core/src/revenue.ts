@@ -1,5 +1,5 @@
-import type { Lead } from './parser';
 import type { LeakSummary, LeadWithLeaks } from './leaks';
+import { isRecoveredStatus, isTerminalStatus } from './parser';
 
 export interface RevenueSummary {
   potentialMissedRevenue: number;
@@ -8,20 +8,7 @@ export interface RevenueSummary {
   defaultAverageTicket: number;
 }
 
-const DEFAULT_AVERAGE_TICKET = 25000; // cents
-
-function getLeadValue(lead: Lead): number {
-  return lead.estimated_value > 0 ? lead.estimated_value : DEFAULT_AVERAGE_TICKET;
-}
-
-function isTerminal(status: string): boolean {
-  const terminal = ['booked', 'lost', 'recovered', 'won'];
-  return terminal.includes(status.toLowerCase());
-}
-
-function isRecovered(status: string): boolean {
-  return ['recovered', 'won', 'booked'].includes(status.toLowerCase());
-}
+export const DEFAULT_AVERAGE_TICKET = 25000; // cents
 
 function hasFollowUpLeak(lead: LeadWithLeaks): boolean {
   return lead.leaks.includes('no_follow_up');
@@ -29,7 +16,7 @@ function hasFollowUpLeak(lead: LeadWithLeaks): boolean {
 
 export function computeRevenue(
   leads: LeadWithLeaks[],
-  leakSummary: LeakSummary,
+  _leakSummary: LeakSummary | undefined,
   defaultAverageTicket: number = DEFAULT_AVERAGE_TICKET
 ): RevenueSummary {
   let potentialMissedRevenue = 0;
@@ -39,8 +26,8 @@ export function computeRevenue(
   for (const lead of leads) {
     const value = lead.estimated_value > 0 ? lead.estimated_value : defaultAverageTicket;
     const status = lead.status.toLowerCase();
-    const terminal = isTerminal(status);
-    const recovered = isRecovered(status);
+    const terminal = isTerminalStatus(status);
+    const recovered = isRecoveredStatus(status);
 
     // potential_missed_revenue: unique unresolved leaked leads (not terminal)
     if (lead.leaks.length > 0 && !terminal) {

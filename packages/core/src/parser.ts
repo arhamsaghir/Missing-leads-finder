@@ -1,10 +1,44 @@
+/**
+ * The lead lifecycle. Single source of truth — the Postgres enum, the parser's
+ * validation, and the engine's terminal checks are all derived from these.
+ */
+export const LEAD_STATUSES = [
+  'new',
+  'contacted',
+  'qualified',
+  'booked',
+  'lost',
+  'recovered',
+  'won',
+] as const;
+
+export type LeadStatus = (typeof LEAD_STATUSES)[number];
+
+/** Statuses where the lead has left the pipeline — no leak can be "fixed". */
+export const TERMINAL_STATUSES = ['booked', 'lost', 'recovered', 'won'] as const;
+
+/**
+ * Statuses counted as recovered revenue. Note `booked` is included here while
+ * it is merely terminal above — preserved from the original implementation
+ * (was revenue.ts `isRecovered`). Deliberate, not a typo.
+ */
+export const RECOVERED_STATUSES = ['recovered', 'won', 'booked'] as const;
+
+export function isTerminalStatus(status: string): boolean {
+  return (TERMINAL_STATUSES as readonly string[]).includes(status.toLowerCase());
+}
+
+export function isRecoveredStatus(status: string): boolean {
+  return (RECOVERED_STATUSES as readonly string[]).includes(status.toLowerCase());
+}
+
 export interface Lead {
   lead_id: string;
   created_at: string;
   customer_name: string;
   contact: string;
   source: string;
-  status: 'new' | 'contacted' | 'qualified' | 'booked' | 'lost' | 'recovered' | 'won';
+  status: LeadStatus;
   last_contact_at?: string;
   next_follow_up_at?: string;
   estimated_value: number; // cents
@@ -39,7 +73,7 @@ const HEADER_MAP: Record<string, keyof Lead | 'ignore'> = {
   'notes': 'notes'
 };
 
-const VALID_STATUSES = ['new', 'contacted', 'qualified', 'booked', 'lost', 'recovered', 'won'];
+const VALID_STATUSES: readonly string[] = LEAD_STATUSES;
 
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
@@ -98,6 +132,10 @@ headers.forEach((h, idx) => {
     const contact = (raw.contact ?? '').trim();
     const source = raw.source ?? 'Manual';
     const notes = raw.notes ?? '';
+    // Blank cells must stay undefined, not '': the leak rules test these for
+    // presence, and '' would read as "we contacted them at the epoch".
+    const last_contact_at = (raw.last_contact_at ?? '').trim() || undefined;
+    const next_follow_up_at = (raw.next_follow_up_at ?? '').trim() || undefined;
 
     if (!contact) {
       errors.push({ row: i, message: `Row ${i}: Missing contact information` });
@@ -128,7 +166,9 @@ headers.forEach((h, idx) => {
       customer_name,
       contact,
       source,
-      status: status as any,
+      status: status as Lead['status'],
+      last_contact_at,
+      next_follow_up_at,
       estimated_value,
       notes,
       row_errors: rowErrors,

@@ -1,5 +1,14 @@
 node_modules/
 dist/
+
+# secrets — never commit; .env.example is the tracked template
+.env
+.env.*
+!.env.example
+
+# tool output
+graphify-out/
+
 .expo/
 .omo/
 .superpowers/

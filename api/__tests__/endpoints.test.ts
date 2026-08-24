@@ -139,11 +139,11 @@ describe('GET /api/me', () => {
     expect(res.status).toBe(403);
     expect((await res.json()).error.code).toBe('no_customer');
 
-    const [{ count }] = await sql<{ count: string }[]>`
+    const rows = await sql<{ count: string }[]>`
       select count(*)::text as count from customers
       where auth_user_id = (select id from auth.users where email like ${`orphan-${RUN}%`})
     `;
-    expect(count).toBe('0');
+    expect(rows[0]?.count).toBe('0');
   });
 
   it('resolves a real session to its tenant', async () => {

@@ -15,6 +15,13 @@
       "when": 1787551553592,
       "tag": "0001_ingest_role",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787553231954,
+      "tag": "0002_grants",
+      "breakpoints": true
     }
   ]
 }

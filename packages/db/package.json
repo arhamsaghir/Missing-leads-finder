@@ -18,6 +18,7 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "test:prove-isolation": "bash scripts/prove-isolation.sh",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio"

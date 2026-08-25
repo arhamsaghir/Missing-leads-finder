@@ -6,8 +6,28 @@ dist/
 .env.*
 !.env.example
 
-# tool output
-graphify-out/
+# knowledge graph (graphify). The graph, report, and extraction cache are
+# tracked: semantic extraction of the design docs cost ~500k tokens and should
+# not be repeated on a fresh clone. Everything below is regenerable from
+# graph.json, so it stays out.
+graphify-out/graph.html
+graphify-out/graph.svg
+graphify-out/graph.graphml
+graphify-out/cypher.txt
+graphify-out/obsidian/
+graphify-out/wiki/
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/.graphify_chunk_*.json
+graphify-out/.graphify_detect.json
+graphify-out/.graphify_extract.json
+graphify-out/.graphify_ast.json
+graphify-out/.graphify_semantic*.json
+graphify-out/.graphify_analysis.json
+graphify-out/.graphify_incremental.json
+graphify-out/.graphify_old.json
+graphify-out/.graphify_cached.json
+graphify-out/.graphify_uncached.txt
 
 # compiled output emitted next to sources by `tsc` (src/App.js, src/*.d.ts, ...).
 # src/css.d.ts is hand-written and tracked — negated below.

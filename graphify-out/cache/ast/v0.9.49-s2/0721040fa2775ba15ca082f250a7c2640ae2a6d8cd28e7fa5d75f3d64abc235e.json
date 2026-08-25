@@ -1,0 +1,1 @@
+{"nodes": [{"id": "$graphify-root$_packages_db_migrations_0002_grants_sql", "label": "0002_grants.sql", "file_type": "code", "source_file": "packages/db/migrations/0002_grants.sql", "source_location": null}], "edges": []}

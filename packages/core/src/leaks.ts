@@ -1,5 +1,5 @@
-import type { Lead } from './parser';
-import { isTerminalStatus } from './parser';
+import type { Lead } from './parser.js';
+import { isTerminalStatus } from './parser.js';
 
 export type LeakType = 'no_reply' | 'slow_reply' | 'no_follow_up' | 'stale_quote';
 

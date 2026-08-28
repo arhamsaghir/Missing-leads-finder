@@ -14,7 +14,7 @@
  * storing less over guessing.
  */
 
-import { normalizeEmail, normalizePhone } from './normalize';
+import { normalizeEmail, normalizePhone } from './normalize.js';
 
 export type ParseWarning =
   | 'email_only_in_business_key'

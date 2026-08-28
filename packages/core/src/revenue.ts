@@ -1,5 +1,5 @@
-import type { LeakSummary, LeadWithLeaks } from './leaks';
-import { isRecoveredStatus, isTerminalStatus } from './parser';
+import type { LeakSummary, LeadWithLeaks } from './leaks.js';
+import { isRecoveredStatus, isTerminalStatus } from './parser.js';
 
 export interface RevenueSummary {
   potentialMissedRevenue: number;

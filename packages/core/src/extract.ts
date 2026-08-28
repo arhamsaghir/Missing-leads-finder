@@ -83,10 +83,16 @@ const FIRST_NAME_KEY = /(first[_-]?name|given[_-]?name|fname)$/i;
  *  unbounded suffix reads `fullName` — and Jotform's `q3_fullName` — as a
  *  surname and joins it to the first name, yielding 'Marcus Marcus Webb'. */
 const LAST_NAME_KEY = /(last[_-]?name|family[_-]?name|surname|(^|[_-])lname)$/i;
-/** A full name must *say* it is one. Inferring it as "the candidate that is
- *  neither first nor last" hands the lead a `middle_name`, a `pet_name` or a
- *  `display_name`. */
+/** Keys that explicitly announce a person's full name. Top preference. */
 const FULL_NAME_KEY = /full[_-]?name|^name$|customer[_-]?name/i;
+/** Name-ish keys that are never the customer's name, even when nothing else is
+ *  present. These are what made exclusion-based inference a defect: a
+ *  `middle_name` returned 'Q' and a `pet_name` returned 'Biscuit'. Everything
+ *  else name-ish is allowed through as a ranked fallback, because
+ *  `contact_name`, `client_name`, `your_name`, `attendee_name` and friends are
+ *  the common real-world spellings and dropping them turns a name-only payload
+ *  into an empty extraction — contradicting "a name alone IS a lead". */
+const NOT_A_FULL_NAME = /middle[_-]?name|pet[_-]?name|nick[_-]?name/i;
 /** A name needs at least one non-digit character, or an id under a name-ish key
  *  becomes the customer. Booleans are rejected by type, not by pattern —
  *  `name_verified: true` stringifies to 'true', which is indistinguishable from
@@ -99,12 +105,20 @@ const NAME_HAS_NON_DIGIT = /\D/;
 const PHONE_FORMATTING = /^\+|[\s.\-()]/;
 /** Only the characters a phone number is written with. Grouping marks alone are
  *  not evidence: `ORD-1234-5678-90` and `10,000,000.00` both reduce to ten
- *  digits and both look "formatted". Letters and commas disqualify a value. */
+ *  digits and both look "formatted". Letters and commas disqualify a value, on
+ *  the key-hinted path too — letters never belong in a phone number, and
+ *  checking only the unhinted path would mean any future hint widening reopened
+ *  the order-id hole. */
 const PHONE_CHARS = /^\+?[\d\s.\-()]+$/;
-/** On the unhinted path a candidate must also be the right *length* for a
- *  number, so a long punctuated reference cannot pass on formatting alone. A
- *  key-hinted value keeps normalizePhone's looser rule, which preserves
- *  international numbers. */
+/** A leading `+` is explicit country-code evidence, and exempts a value from the
+ *  length rule below. `normalize.ts:37-44` deliberately keeps every digit of a
+ *  longer number rather than truncating, so refusing `+44 7911 123456`
+ *  contradicts the layer underneath. */
+const COUNTRY_CODE_PREFIX = /^\+/;
+/** Without a `+`, an unhinted candidate must be the right *length* for a number,
+ *  so a long punctuated reference cannot pass on formatting alone. A key-hinted
+ *  value keeps normalizePhone's looser rule, which preserves international
+ *  numbers. */
 const NANP_DIGIT_COUNT = /^\d{10,11}$/;
 
 /** ISO-ish date or a clock time. `2026-08-27T09:15:00.000Z` reduces to 17
@@ -123,6 +137,19 @@ interface Candidate {
   /** True when the source JSON value was a boolean. `String(true)` is
    *  indistinguishable from the text 'true' after flattening. */
   wasBoolean: boolean;
+}
+
+/**
+ * Canonical form of a key: lowercased, with runs of whitespace collapsed to `_`.
+ *
+ * Label-shaped fields become the key of their sibling value, and a label keeps
+ * its spaces — `Full Name`, `First Name`, `Sender Email`. No pattern here
+ * tolerates a space, so without this `Full Name` extracts no name and
+ * `Sender Email` walks past BUSINESS_EMAIL_KEY, whose `[_-]` boundary cannot
+ * reach a space.
+ */
+function normalizeKey(raw: string): string {
+  return raw.trim().toLowerCase().replace(/\s+/g, '_');
 }
 
 /**
@@ -172,17 +199,17 @@ function flatten(payload: unknown): Candidate[] {
     if (typeof labelish === 'string' && valueish !== undefined && valueish !== null) {
       // The label names the value; walk the value under it and never let the
       // label's own text become a candidate.
-      walk(valueish, labelish.toLowerCase(), key, depth + 1);
+      walk(valueish, normalizeKey(labelish), key, depth + 1);
       const consumed = new Set(['label', 'question', 'title', 'field', 'type', 'value', 'answer', 'text']);
       if (typeof record.type === 'string') consumed.add(record.type);
       for (const [k, v] of Object.entries(record)) {
         if (consumed.has(k)) continue;
-        walk(v, k.toLowerCase(), key, depth + 1);
+        walk(v, normalizeKey(k), key, depth + 1);
       }
       return;
     }
 
-    for (const [k, v] of Object.entries(record)) walk(v, k.toLowerCase(), key, depth + 1);
+    for (const [k, v] of Object.entries(record)) walk(v, normalizeKey(k), key, depth + 1);
   };
 
   walk(payload, '', '', 0);
@@ -220,10 +247,12 @@ function pickEmail(candidates: Candidate[]): { email: string | null; refused: bo
  * identity, which merges two unrelated humans. So a candidate needs either a key
  * hint or visible formatting.
  *
- * Tighter than the plan's version in two ways, because formatting alone is not
- * evidence: a value must contain no letters or commas (PHONE_CHARS), and on the
- * unhinted path it must reduce to exactly 10 or 11 digits. Without those,
- * `ORD-1234-5678-90` and `10,000,000.00` each yielded a phone.
+ * Tighter than the plan's version in three ways, because formatting alone is not
+ * evidence: a value must contain no letters or commas (PHONE_CHARS) on *either*
+ * path, and on the unhinted path it must also reduce to exactly 10 or 11 digits
+ * unless it carries a leading `+`. Without the first two, `ORD-1234-5678-90` and
+ * `10,000,000.00` each yielded a phone; without the `+` exemption,
+ * `+44 7911 123456` was refused even though normalize.ts protects it.
  */
 function pickPhone(candidates: Candidate[]): { phone: string | null; refused: boolean } {
   let refused = false;
@@ -239,18 +268,23 @@ function pickPhone(candidates: Candidate[]): { phone: string | null; refused: bo
       normalizePhone(c.value) !== null,
   );
 
-  const hinted = plausible.find((c) => PHONE_KEY_HINT.test(c.key));
+  // PHONE_CHARS gates both paths, but as a *refusal* rather than a pre-filter:
+  // filtering letters out silently would drop the phone_rejected_unformatted
+  // warning, and a refused order id must still be reported.
+  const hinted = plausible.find((c) => PHONE_KEY_HINT.test(c.key) && PHONE_CHARS.test(c.value));
   if (hinted) return { phone: normalizePhone(hinted.value), refused: false };
 
   for (const c of plausible) {
     if (
-      PHONE_FORMATTING.test(c.value) &&
       PHONE_CHARS.test(c.value) &&
-      NANP_DIGIT_COUNT.test(c.value.replace(/\D/g, ''))
+      PHONE_FORMATTING.test(c.value) &&
+      (COUNTRY_CODE_PREFIX.test(c.value) || NANP_DIGIT_COUNT.test(c.value.replace(/\D/g, '')))
     ) {
       return { phone: normalizePhone(c.value), refused: false };
     }
-    // Phone-shaped digits, no key hint, no formatting. Refuse and remember why.
+    // Phone-shaped digits without enough evidence to use them: letters or a
+    // comma, no formatting at all, or the wrong number of digits with no
+    // country code.
     refused = true;
   }
   return { phone: null, refused };
@@ -259,11 +293,17 @@ function pickPhone(candidates: Candidate[]): { phone: string | null; refused: bo
 /**
  * The customer's name, or null.
  *
- * Two divergences from the plan, both because it inferred rather than required:
- * the full name must match FULL_NAME_KEY instead of being "whichever candidate
- * is neither first nor last" (which returned a `middle_name` or a `pet_name`),
- * and a candidate must be text rather than a boolean or a bare id (`name_verified:
- * true` became the customerName 'true', defeating isEmptyExtraction).
+ * Ranked, not a single gate. An explicit full-name key wins; failing that, any
+ * remaining name-ish candidate that is neither the first-name nor the last-name
+ * pick and is not on the NOT_A_FULL_NAME list. The plan's single
+ * FULL_NAME_KEY gate was too narrow — it dropped `contact_name`, `client_name`,
+ * `your_name` and every other real spelling, turning a name-only payload into an
+ * empty extraction. Pure exclusion was too wide — it returned a `middle_name` or
+ * a `pet_name`.
+ *
+ * A candidate must also be text rather than a boolean or a bare id
+ * (`name_verified: true` became the customerName 'true', defeating
+ * isEmptyExtraction).
  */
 function pickName(candidates: Candidate[]): string | null {
   const named = candidates.filter(
@@ -277,7 +317,9 @@ function pickName(candidates: Candidate[]): string | null {
   const first = named.find((c) => FIRST_NAME_KEY.test(c.key));
   const last = named.find((c) => LAST_NAME_KEY.test(c.key));
   // A full name beats first+last, which beats either alone.
-  const full = named.find((c) => FULL_NAME_KEY.test(c.key));
+  const full =
+    named.find((c) => FULL_NAME_KEY.test(c.key)) ??
+    named.find((c) => c !== first && c !== last && !NOT_A_FULL_NAME.test(c.key));
   if (full) return full.value;
   if (first && last) return `${first.value} ${last.value}`;
   return first?.value ?? last?.value ?? null;
@@ -299,11 +341,15 @@ function pickNotes(candidates: Candidate[]): string | null {
  *
  * The parent check is the same rule one level down, and is a divergence from the
  * plan: `flatten` keeps only the final segment, so `{user: {id: 'u_99'}}` arrives
- * as a bare `id` and slipped past the exact-match list entirely.
+ * as a bare `id` and slipped past the exact-match list entirely. It applies to a
+ * bare `id` only — `form.submission_id` names the submission, not the form, and
+ * rejecting it would push buildDedupeKey onto hashing the canonical payload,
+ * where a re-serialized redelivery no longer dedupes.
  */
 function pickEventId(candidates: Candidate[]): string | null {
   const found = candidates.find(
-    (c) => EVENT_ID_KEY.test(c.key) && !STABLE_ID_PARENT.test(c.parent),
+    (c) =>
+      EVENT_ID_KEY.test(c.key) && !(c.key === 'id' && STABLE_ID_PARENT.test(c.parent)),
   );
   return found ? found.value : null;
 }

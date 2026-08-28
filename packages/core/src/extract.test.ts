@@ -116,7 +116,7 @@ describe('extractLead — the two silent-corruption cases', () => {
   });
 
   it.each([['reply_to'], ['reply-to'], ['sender'], ['owner'], ['account'], ['admin'], ['to']])(
-    'refuses an address found only under `%s`',
+    'refuses an address found only under the exact key `%s`',
     (key) => {
       const lead = extractLead({ [key]: 'hello@sunsetsalon.com' }, NOW);
       expect(lead.email).toBeNull();
@@ -152,9 +152,21 @@ describe('extractLead — the two silent-corruption cases', () => {
   });
 
   it.each([['from_email'], ['sender_email'], ['_replyto'], ['reply_to_email'], ['email_from']])(
-    'refuses an address found only under `%s`',
+    'refuses an address found only under the suffixed key `%s`',
     (key) => {
       const lead = extractLead({ [key]: 'hello@sunsetsalon.com' }, NOW);
+      expect(lead.email).toBeNull();
+      expect(lead.warnings).toContain('email_only_in_business_key');
+    },
+  );
+
+  it.each([['Sender Email'], ['Reply To'], ['From Address']])(
+    'refuses an address under the space-separated label `%s`',
+    (label) => {
+      // A label becomes the key of its sibling value, and labels keep their
+      // spaces. `[_-]` cannot reach a space boundary, so `Sender Email` walked
+      // straight past the business-key guard.
+      const lead = extractLead({ fields: [{ label, value: 'hello@sunsetsalon.com' }] }, NOW);
       expect(lead.email).toBeNull();
       expect(lead.warnings).toContain('email_only_in_business_key');
     },
@@ -216,6 +228,45 @@ describe('extractLead — the two silent-corruption cases', () => {
     const lead = extractLead({ reference: '415-555-019-999' }, NOW);
     expect(lead.phone).toBeNull();
     expect(lead.warnings).toContain('phone_rejected_unformatted');
+  });
+
+  it.each([
+    ['contact_number', '+44 7911 123456', '447911123456'],
+    ['whatsapp', '+61 2 9374 4000', '61293744000'],
+    ['reference', '+91 98765 43210', '919876543210'],
+  ])('accepts an international number under `%s` on the strength of its +', (key, raw, expected) => {
+    // normalize.ts:37-44 deliberately keeps every digit of a longer number,
+    // because truncating to the last 10 would merge distinct international
+    // numbers. A NANP-only length rule would refuse what the layer below
+    // protects. A leading + is explicit country-code evidence.
+    const lead = extractLead({ [key]: raw }, NOW);
+    expect(lead.phone).toBe(expected);
+    expect(lead.warnings).toEqual([]);
+  });
+
+  it('accepts an international number from a space-separated label', () => {
+    const lead = extractLead(
+      { fields: [{ label: 'Contact number', value: '+44 7911 123456' }] },
+      NOW,
+    );
+    expect(lead.phone).toBe('447911123456');
+    expect(lead.warnings).toEqual([]);
+  });
+
+  it('refuses a long digit run with no + and no key hint', () => {
+    // The + is the whole basis for skipping the length rule. Without it a
+    // 12-digit run is still just a reference number.
+    const lead = extractLead({ reference: '415 555 019 999' }, NOW);
+    expect(lead.phone).toBeNull();
+    expect(lead.warnings).toContain('phone_rejected_unformatted');
+  });
+
+  it('refuses letters even under a phone-hinted key', () => {
+    // Letters never belong in a phone number, so the character check applies on
+    // the hinted path too — otherwise widening the hints reopens the order-id
+    // hole.
+    const lead = extractLead({ phone: 'EXT-1234-5678-90' }, NOW);
+    expect(lead.phone).toBeNull();
   });
 });
 
@@ -343,12 +394,55 @@ describe('extractLead — names and notes', () => {
     expect(lead.customerName).toBe('Marcus Webb');
   });
 
-  it('does not read Jotform`s q3_fullName as a last name', () => {
+  it('does not read Jotform\'s q3_fullName as a last name', () => {
     const lead = extractLead(
       { q3_fullName: 'Marcus Webb', q2_firstName: 'Marcus', email: 'x@example.com' },
       NOW,
     );
     expect(lead.customerName).toBe('Marcus Webb');
+  });
+
+  it.each([
+    ['contact_name'],
+    ['client_name'],
+    ['your_name'],
+    ['attendee_name'],
+    ['guest_name'],
+    ['patient_name'],
+    ['lead_name'],
+    ['invitee_name'],
+    ['display_name'],
+  ])('reads a person\'s name from `%s`', (key) => {
+    // Requiring an explicit full-name pattern with no fallback silently drops
+    // every real-world name key that is not literally `name`/`full_name`. A
+    // name-only payload would flip to an empty extraction, contradicting the
+    // "a name alone IS a lead" rule.
+    const lead = extractLead({ [key]: 'Priya Raman' }, NOW);
+    expect(lead.customerName).toBe('Priya Raman');
+    expect(isEmptyExtraction(lead)).toBe(false);
+    expect(lead.warnings).toEqual([]);
+  });
+
+  it.each([['Full Name'], ['Your Name'], ['Contact Name']])(
+    'reads a name from the space-separated label `%s`',
+    (label) => {
+      // Labels keep their spaces, and no name pattern here tolerates one.
+      const lead = extractLead({ fields: [{ label, value: 'Priya Raman' }] }, NOW);
+      expect(lead.customerName).toBe('Priya Raman');
+    },
+  );
+
+  it('joins space-separated First Name and Last Name labels', () => {
+    const lead = extractLead(
+      {
+        fields: [
+          { label: 'First Name', value: 'Sam' },
+          { label: 'Last Name', value: 'Okafor' },
+        ],
+      },
+      NOW,
+    );
+    expect(lead.customerName).toBe('Sam Okafor');
   });
 
   it('does not let a middle name masquerade as the full name', () => {
@@ -369,6 +463,22 @@ describe('extractLead — names and notes', () => {
       NOW,
     );
     expect(lead.customerName).toBe('Sam Okafor');
+  });
+
+  it.each([['middle_name'], ['pet_name'], ['nickname'], ['nick_name']])(
+    'never takes `%s` as the customer name, even alone',
+    (key) => {
+      // These are the keys that made exclusion-based inference a defect. The
+      // ranked fallback must not readmit them.
+      const lead = extractLead({ [key]: 'Rex' }, NOW);
+      expect(lead.customerName).toBeNull();
+    },
+  );
+
+  it('prefers an explicit full name over a merely name-ish key', () => {
+    // The ranked fallback is a fallback: an explicit full-name key still wins.
+    const lead = extractLead({ display_name: 'sunsetsalon_official', full_name: 'Priya Raman' }, NOW);
+    expect(lead.customerName).toBe('Priya Raman');
   });
 
   it('does not treat a boolean flag under a name-ish key as a name', () => {
@@ -446,11 +556,28 @@ describe('extractLead — provider event id', () => {
   });
 
   it('still reads a delivery id nested under a neutral parent', () => {
-    // Negative control for the rule above: only form/user/account/organization
-    // parents are stable. `data.form_response.id` is per-delivery.
-    const lead = extractLead({ data: { form_response: { id: 'nested-1' } } }, NOW);
+    // Negative control for the rule above, and it must be a real control: a
+    // stable `form.id` and a per-delivery `form_response.id` in ONE payload, so
+    // the assertion fails both if the rejection is dropped and if it is widened
+    // to swallow everything nested.
+    const lead = extractLead(
+      { form: { id: 'aB3xY' }, data: { form_response: { id: 'nested-1' } } },
+      NOW,
+    );
     expect(lead.providerEventId).toBe('nested-1');
   });
+
+  it.each([['submission_id'], ['response_id'], ['form_response_id'], ['event_id']])(
+    'still reads a per-delivery `%s` even under a stable parent',
+    (key) => {
+      // Only a bare `id` is ambiguous under `form`/`user`. `form.submission_id`
+      // names the submission, not the form, so rejecting it needlessly pushes
+      // buildDedupeKey onto hashing the payload — a re-serialized redelivery
+      // would then not dedupe.
+      const lead = extractLead({ form: { [key]: 's_1' }, email: 'x@example.com' }, NOW);
+      expect(lead.providerEventId).toBe('s_1');
+    },
+  );
 
   it('stringifies a numeric id', () => {
     expect(extractLead({ submission_id: 5820119 }, NOW).providerEventId).toBe('5820119');

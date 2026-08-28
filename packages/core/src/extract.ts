@@ -50,13 +50,26 @@ const FIVE_MINUTES_MS = 5 * 60 * 1000;
  * single submission. Matching on it would collapse the entire dataset onto one
  * lead_identities row — a silent corruption of the one number the product
  * sells, not a crash.
+ *
+ * Matched as a *segment*, deliberately looser than the plan's anchored version:
+ * anchoring let `from_email`, `sender_email` and `_replyto` walk straight past
+ * the guard, and because those keys contain `mail` the EMAIL_KEY_HINT below
+ * actively promoted them ahead of a real `customer_email` in the same payload.
  */
-const BUSINESS_EMAIL_KEY = /^(from|sender|owner|account|admin|to|reply[_-]?to)$/i;
+const BUSINESS_EMAIL_KEY = /(^|[_-])(from|sender|owner|account|admin|to|reply[_-]?to)([_-]|$)/i;
 const EMAIL_KEY_HINT = /mail/i;
 const PHONE_KEY_HINT = /phone|tel|mobile|cell/i;
 const NOTES_KEY = /message|comment|note|enquir|inquir|detail|descript/i;
 const EVENT_ID_KEY = /^(id|event_id|submission_id|response_id|form_response_id)$/i;
 const TIMESTAMP_KEY = /^(created_at|submitted_at|timestamp|occurred_at|received_at|date|submission_date)$/i;
+
+/** Parents whose `id` is stable across every delivery. `flatten` keeps only the
+ *  final path segment, so `{user: {id}}` and `{form: {id}}` both arrive as a
+ *  bare `id` and match EVENT_ID_KEY exactly — the same corruption the flat
+ *  `form_id`/`user_id` exclusion prevents, one level down. A stable id makes
+ *  buildDedupeKey treat every later real lead as a retry of the first and
+ *  silently discard it (`packages/db/src/repo/ingest.ts:59-61`). */
+const STABLE_ID_PARENT = /^(form|user|account|organi[sz]ation)$/i;
 
 /** Any key mentioning a name, minus the ones that name something other than a
  *  person. `form_name` is the form's title and `business_name` is the salon —
@@ -66,11 +79,33 @@ const NAME_KEY = /name/i;
 const NAME_KEY_EXCLUDE =
   /(form|business|company|brand|file|host|event|organi[sz]ation|user|account|domain|page)[_-]?name/i;
 const FIRST_NAME_KEY = /(first[_-]?name|given[_-]?name|fname)$/i;
-const LAST_NAME_KEY = /(last[_-]?name|family[_-]?name|surname|lname)$/i;
+/** `lname` needs a boundary: keys are lowercased before matching, so an
+ *  unbounded suffix reads `fullName` — and Jotform's `q3_fullName` — as a
+ *  surname and joins it to the first name, yielding 'Marcus Marcus Webb'. */
+const LAST_NAME_KEY = /(last[_-]?name|family[_-]?name|surname|(^|[_-])lname)$/i;
+/** A full name must *say* it is one. Inferring it as "the candidate that is
+ *  neither first nor last" hands the lead a `middle_name`, a `pet_name` or a
+ *  `display_name`. */
+const FULL_NAME_KEY = /full[_-]?name|^name$|customer[_-]?name/i;
+/** A name needs at least one non-digit character, or an id under a name-ish key
+ *  becomes the customer. Booleans are rejected by type, not by pattern —
+ *  `name_verified: true` stringifies to 'true', which is indistinguishable from
+ *  a legitimate string once flattened, and as a customerName it defeats
+ *  isEmptyExtraction and creates an un-dedupable junk row. */
+const NAME_HAS_NON_DIGIT = /\D/;
 
 /** Starts with a country-code `+`, or carries a grouping mark. Either way a
  *  human wrote this intending a phone number. */
 const PHONE_FORMATTING = /^\+|[\s.\-()]/;
+/** Only the characters a phone number is written with. Grouping marks alone are
+ *  not evidence: `ORD-1234-5678-90` and `10,000,000.00` both reduce to ten
+ *  digits and both look "formatted". Letters and commas disqualify a value. */
+const PHONE_CHARS = /^\+?[\d\s.\-()]+$/;
+/** On the unhinted path a candidate must also be the right *length* for a
+ *  number, so a long punctuated reference cannot pass on formatting alone. A
+ *  key-hinted value keeps normalizePhone's looser rule, which preserves
+ *  international numbers. */
+const NANP_DIGIT_COUNT = /^\d{10,11}$/;
 
 /** ISO-ish date or a clock time. `2026-08-27T09:15:00.000Z` reduces to 17
  *  digits, which normalizePhone happily accepts and the `-` makes look
@@ -81,7 +116,13 @@ interface Candidate {
   /** The final path segment, lowercased. Providers prefix keys (`q4_email`),
    *  so hints are matched as substrings, not equality. */
   key: string;
+  /** The enclosing object's own key, lowercased. Only `pickEventId` uses it:
+   *  a bare `id` means different things under `form` than under `form_response`. */
+  parent: string;
   value: string;
+  /** True when the source JSON value was a boolean. `String(true)` is
+   *  indistinguishable from the text 'true' after flattening. */
+  wasBoolean: boolean;
 }
 
 /**
@@ -100,12 +141,12 @@ function flatten(payload: unknown): Candidate[] {
   const out: Candidate[] = [];
   const seen = new WeakSet<object>();
 
-  const walk = (node: unknown, key: string, depth: number): void => {
+  const walk = (node: unknown, key: string, parent: string, depth: number): void => {
     if (depth > MAX_DEPTH || node === null || node === undefined) return;
 
     if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') {
       const value = String(node).trim();
-      if (value) out.push({ key, value });
+      if (value) out.push({ key, parent, value, wasBoolean: typeof node === 'boolean' });
       return;
     }
     if (typeof node !== 'object') return;
@@ -113,7 +154,9 @@ function flatten(payload: unknown): Candidate[] {
     seen.add(node);
 
     if (Array.isArray(node)) {
-      for (const item of node) walk(item, key, depth + 1);
+      // An array is not a naming level: its items keep the array's own key, so
+      // `parent` passes through untouched.
+      for (const item of node) walk(item, key, parent, depth + 1);
       return;
     }
 
@@ -129,20 +172,20 @@ function flatten(payload: unknown): Candidate[] {
     if (typeof labelish === 'string' && valueish !== undefined && valueish !== null) {
       // The label names the value; walk the value under it and never let the
       // label's own text become a candidate.
-      walk(valueish, labelish.toLowerCase(), depth + 1);
+      walk(valueish, labelish.toLowerCase(), key, depth + 1);
       const consumed = new Set(['label', 'question', 'title', 'field', 'type', 'value', 'answer', 'text']);
       if (typeof record.type === 'string') consumed.add(record.type);
       for (const [k, v] of Object.entries(record)) {
         if (consumed.has(k)) continue;
-        walk(v, k.toLowerCase(), depth + 1);
+        walk(v, k.toLowerCase(), key, depth + 1);
       }
       return;
     }
 
-    for (const [k, v] of Object.entries(record)) walk(v, k.toLowerCase(), depth + 1);
+    for (const [k, v] of Object.entries(record)) walk(v, k.toLowerCase(), key, depth + 1);
   };
 
-  walk(payload, '', 0);
+  walk(payload, '', '', 0);
   return out;
 }
 
@@ -176,35 +219,65 @@ function pickEmail(candidates: Candidate[]): { email: string | null; refused: bo
  * id, a zip+4 with an extension, an epoch value. A wrong phone creates a wrong
  * identity, which merges two unrelated humans. So a candidate needs either a key
  * hint or visible formatting.
+ *
+ * Tighter than the plan's version in two ways, because formatting alone is not
+ * evidence: a value must contain no letters or commas (PHONE_CHARS), and on the
+ * unhinted path it must reduce to exactly 10 or 11 digits. Without those,
+ * `ORD-1234-5678-90` and `10,000,000.00` each yielded a phone.
  */
 function pickPhone(candidates: Candidate[]): { phone: string | null; refused: boolean } {
   let refused = false;
   // A timestamp reduces to a long digit run and contains dashes, so it passes
-  // both normalizePhone and the formatting check. Exclude it up front.
+  // both normalizePhone and the formatting check. Exclude it up front — by key as
+  // well as by shape, since a bare epoch-seconds value is neither DATE_SHAPED nor
+  // distinguishable from a NANP number, and warning about it would report a
+  // refused phone on a payload that has no phone field at all.
   const plausible = candidates.filter(
-    (c) => !DATE_SHAPED.test(c.value) && normalizePhone(c.value) !== null,
+    (c) =>
+      !TIMESTAMP_KEY.test(c.key) &&
+      !DATE_SHAPED.test(c.value) &&
+      normalizePhone(c.value) !== null,
   );
 
   const hinted = plausible.find((c) => PHONE_KEY_HINT.test(c.key));
   if (hinted) return { phone: normalizePhone(hinted.value), refused: false };
 
   for (const c of plausible) {
-    if (PHONE_FORMATTING.test(c.value)) return { phone: normalizePhone(c.value), refused: false };
+    if (
+      PHONE_FORMATTING.test(c.value) &&
+      PHONE_CHARS.test(c.value) &&
+      NANP_DIGIT_COUNT.test(c.value.replace(/\D/g, ''))
+    ) {
+      return { phone: normalizePhone(c.value), refused: false };
+    }
     // Phone-shaped digits, no key hint, no formatting. Refuse and remember why.
     refused = true;
   }
   return { phone: null, refused };
 }
 
+/**
+ * The customer's name, or null.
+ *
+ * Two divergences from the plan, both because it inferred rather than required:
+ * the full name must match FULL_NAME_KEY instead of being "whichever candidate
+ * is neither first nor last" (which returned a `middle_name` or a `pet_name`),
+ * and a candidate must be text rather than a boolean or a bare id (`name_verified:
+ * true` became the customerName 'true', defeating isEmptyExtraction).
+ */
 function pickName(candidates: Candidate[]): string | null {
   const named = candidates.filter(
-    (c) => NAME_KEY.test(c.key) && !NAME_KEY_EXCLUDE.test(c.key),
+    (c) =>
+      NAME_KEY.test(c.key) &&
+      !NAME_KEY_EXCLUDE.test(c.key) &&
+      !c.wasBoolean &&
+      NAME_HAS_NON_DIGIT.test(c.value),
   );
 
   const first = named.find((c) => FIRST_NAME_KEY.test(c.key));
   const last = named.find((c) => LAST_NAME_KEY.test(c.key));
   // A full name beats first+last, which beats either alone.
-  const full = named.find((c) => c !== first && c !== last);
+  const full = named.find((c) => FULL_NAME_KEY.test(c.key));
   if (full) return full.value;
   if (first && last) return `${first.value} ${last.value}`;
   return first?.value ?? last?.value ?? null;
@@ -223,9 +296,15 @@ function pickNotes(candidates: Candidate[]): string | null {
  * are stable across every submission, so using either as the dedupe key would
  * make the second real lead look like a retry of the first and silently discard
  * it.
+ *
+ * The parent check is the same rule one level down, and is a divergence from the
+ * plan: `flatten` keeps only the final segment, so `{user: {id: 'u_99'}}` arrives
+ * as a bare `id` and slipped past the exact-match list entirely.
  */
 function pickEventId(candidates: Candidate[]): string | null {
-  const found = candidates.find((c) => EVENT_ID_KEY.test(c.key));
+  const found = candidates.find(
+    (c) => EVENT_ID_KEY.test(c.key) && !STABLE_ID_PARENT.test(c.parent),
+  );
   return found ? found.value : null;
 }
 

@@ -138,6 +138,28 @@ describe('extractLead — the two silent-corruption cases', () => {
     expect(lead.warnings).toEqual([]);
   });
 
+  it('refuses a business address under a suffixed key, even against a real one', () => {
+    // `from_email` is not the exact string `from`, so an anchored guard misses it
+    // — and because it contains `mail` the email hint PROMOTES it ahead of the
+    // real `customer_email`. That is the collapse-every-lead-onto-one-identity
+    // corruption, arriving through the key the guard was written to catch.
+    const lead = extractLead(
+      { from_email: 'hello@sunsetsalon.com', customer_email: 'real@example.com' },
+      NOW,
+    );
+    expect(lead.email).toBe('real@example.com');
+    expect(lead.warnings).toEqual([]);
+  });
+
+  it.each([['from_email'], ['sender_email'], ['_replyto'], ['reply_to_email'], ['email_from']])(
+    'refuses an address found only under `%s`',
+    (key) => {
+      const lead = extractLead({ [key]: 'hello@sunsetsalon.com' }, NOW);
+      expect(lead.email).toBeNull();
+      expect(lead.warnings).toContain('email_only_in_business_key');
+    },
+  );
+
   it('refuses a bare 10-digit run with no key hint and no formatting', () => {
     // An order id, a zip+4 with an extension, or an epoch value all normalize to
     // a plausible phone. A wrong phone creates a wrong identity, which merges
@@ -170,6 +192,31 @@ describe('extractLead — the two silent-corruption cases', () => {
       expect(lead.warnings).toEqual([]);
     }
   });
+
+  it('refuses a punctuated order id that only looks formatted', () => {
+    // Dashes are not evidence of a phone number. `ORD-1234-5678-90` reduces to
+    // ten digits and carries grouping marks, so a formatting-only check accepts
+    // it and writes a wrong lead_identities row.
+    const lead = extractLead({ order_number: 'ORD-1234-5678-90' }, NOW);
+    expect(lead.phone).toBeNull();
+    expect(lead.warnings).toContain('phone_rejected_unformatted');
+  });
+
+  it('refuses a formatted currency amount', () => {
+    // `10,000,000.00` reduces to ten digits and has dots and commas. Money is
+    // never a phone number.
+    const lead = extractLead({ amount_due: '10,000,000.00' }, NOW);
+    expect(lead.phone).toBeNull();
+    expect(lead.warnings).toContain('phone_rejected_unformatted');
+  });
+
+  it('refuses a digit run that is the wrong length to be a number', () => {
+    // A 12-digit punctuated reference is not a NANP number; without a key hint
+    // there is no evidence it is a phone at all.
+    const lead = extractLead({ reference: '415-555-019-999' }, NOW);
+    expect(lead.phone).toBeNull();
+    expect(lead.warnings).toContain('phone_rejected_unformatted');
+  });
 });
 
 describe('extractLead — timestamps', () => {
@@ -179,7 +226,11 @@ describe('extractLead — timestamps', () => {
     // PROJECT.md:98.
     const lead = extractLead({ email: 'x@example.com', created_at: 1787000000 }, NOW);
     expect(lead.occurredAt).toBeNull();
-    expect(lead.warnings).toContain('timestamp_out_of_window');
+    // Exact, not toContain: a 10-digit epoch value is also a plausible
+    // normalizePhone input and is not DATE_SHAPED, so a phone picker that does
+    // not exclude timestamp keys emits a spurious phone_rejected_unformatted on
+    // a payload that has no phone field at all. toContain would hide that.
+    expect(lead.warnings).toEqual(['timestamp_out_of_window']);
   });
 
   it('rejects a timestamp more than 90 days old', () => {
@@ -284,6 +335,58 @@ describe('extractLead — names and notes', () => {
     expect(lead.customerName).toBeNull();
   });
 
+  it('does not read camelCase `fullName` as a last name', () => {
+    // Keys are lowercased before matching, so `fullName` ends in `lname`. An
+    // unbounded last-name suffix classifies it as a surname and joins it to the
+    // first name, yielding 'Marcus Marcus Webb'.
+    const lead = extractLead({ fullName: 'Marcus Webb', firstName: 'Marcus' }, NOW);
+    expect(lead.customerName).toBe('Marcus Webb');
+  });
+
+  it('does not read Jotform`s q3_fullName as a last name', () => {
+    const lead = extractLead(
+      { q3_fullName: 'Marcus Webb', q2_firstName: 'Marcus', email: 'x@example.com' },
+      NOW,
+    );
+    expect(lead.customerName).toBe('Marcus Webb');
+  });
+
+  it('does not let a middle name masquerade as the full name', () => {
+    // Inferring "the full name is whichever candidate is neither first nor last"
+    // picks `middle_name` and returns 'Q'.
+    const lead = extractLead(
+      { first_name: 'Sam', middle_name: 'Q', last_name: 'Okafor' },
+      NOW,
+    );
+    expect(lead.customerName).toBe('Sam Okafor');
+  });
+
+  it('does not let an unrelated name-ish key beat first+last', () => {
+    // A `pet_name` is name-shaped, is neither first nor last, and would win
+    // outright under exclusion-based inference.
+    const lead = extractLead(
+      { first_name: 'Sam', last_name: 'Okafor', pet_name: 'Biscuit' },
+      NOW,
+    );
+    expect(lead.customerName).toBe('Sam Okafor');
+  });
+
+  it('does not treat a boolean flag under a name-ish key as a name', () => {
+    // `name_verified: true` stringifies to 'true'. As a customerName it defeats
+    // isEmptyExtraction, so a payload with no contact point and no human name
+    // still creates an un-dedupable lead row.
+    const lead = extractLead({ name_verified: true }, NOW);
+    expect(lead.customerName).toBeNull();
+    expect(isEmptyExtraction(lead)).toBe(true);
+    expect(lead.warnings).toContain('nothing_extracted');
+  });
+
+  it('does not treat an all-digit value under a name-ish key as a name', () => {
+    const lead = extractLead({ name_id: 40199 }, NOW);
+    expect(lead.customerName).toBeNull();
+    expect(isEmptyExtraction(lead)).toBe(true);
+  });
+
   it('truncates notes at 2000 characters', () => {
     const lead = extractLead({ email: 'x@example.com', message: 'a'.repeat(2500) }, NOW);
     expect(lead.notes).toHaveLength(2000);
@@ -328,6 +431,27 @@ describe('extractLead — provider event id', () => {
     expect(lead.providerEventId).toBeNull();
   });
 
+  it.each([
+    ['form', { form: { id: 'aB3xY' } }],
+    ['user', { user: { id: 'u_99' } }],
+    ['account', { account: { id: 'acct_7' } }],
+    ['organization', { organization: { id: 'org_3' } }],
+  ])('ignores a stable `%s.id` nested one level down', (_label, nested) => {
+    // flatten keeps only the final path segment, so `{user: {id}}` arrives as a
+    // bare `id` and matches the exact key list. That id is stable across every
+    // submission from that form or user, so buildDedupeKey would treat the second
+    // real lead as a retry of the first and silently discard it.
+    const lead = extractLead({ ...nested, email: 'x@example.com' }, NOW);
+    expect(lead.providerEventId).toBeNull();
+  });
+
+  it('still reads a delivery id nested under a neutral parent', () => {
+    // Negative control for the rule above: only form/user/account/organization
+    // parents are stable. `data.form_response.id` is per-delivery.
+    const lead = extractLead({ data: { form_response: { id: 'nested-1' } } }, NOW);
+    expect(lead.providerEventId).toBe('nested-1');
+  });
+
   it('stringifies a numeric id', () => {
     expect(extractLead({ submission_id: 5820119 }, NOW).providerEventId).toBe('5820119');
   });
@@ -357,11 +481,15 @@ describe('extractLead — arrays of question/answer pairs', () => {
   });
 
   it('does not let a question label supply the answer', () => {
-    // The label is the form's wording, never the customer's data.
+    // The label is the form's wording, never the customer's data. The label must
+    // be a BARE address: with surrounding prose normalizeEmail rejects it on the
+    // spaces alone, so the fixture would pass even with the label special-case
+    // deleted and could never fail.
     const lead = extractLead(
-      { fields: [{ label: 'Email us at hello@sunsetsalon.com', value: 'real@example.com' }] },
+      { fields: [{ label: 'hello@sunsetsalon.com', value: 'real@example.com' }] },
       NOW,
     );
     expect(lead.email).toBe('real@example.com');
+    expect(lead.warnings).toEqual([]);
   });
 });

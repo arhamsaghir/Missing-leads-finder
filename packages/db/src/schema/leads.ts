@@ -39,6 +39,11 @@ export const leadSources = pgTable(
      *  break the moment they rotate. */
     webhookTokenPrevious: text('webhook_token_previous').unique(),
     inboundAddress: text('inbound_address').unique(),
+    /** When webhookTokenPrevious was demoted. The overlap window is measured
+     *  from here, so a rotation cannot leave an old token live forever. A null
+     *  value means the window's start is unknown, and ingest_admit fails closed
+     *  rather than honouring an unbounded one. */
+    tokenRotatedAt: timestamp('token_rotated_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
   },

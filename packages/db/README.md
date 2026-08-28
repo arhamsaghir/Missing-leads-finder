@@ -69,10 +69,28 @@ while proving nothing.
 ## Migrations
 
 ```bash
-npm run db:generate -w @missed-lead/db                  # from schema changes
-npx drizzle-kit generate --custom --name=<thing>        # for raw SQL (roles, grants)
+npm run db:generate -w @missed-lead/db     # from schema changes
 ```
 
-Use `--custom` rather than hand-writing a file — it registers the journal entry
-that `migrate` reads. Migrations run against `DATABASE_URL_DIRECT`; DDL needs
-session state a transaction pooler will not hold.
+Then append any raw SQL — roles, grants, functions — to the file it generated.
+Drizzle emits `CREATE POLICY` but never `GRANT`, `CREATE ROLE`, or
+`CREATE FUNCTION`, so those are always hand-written.
+
+**Do not use `--custom`.** It emits an empty SQL file *and* writes a snapshot
+identical to the previous one, so any schema change you made becomes invisible to
+the next `generate` — which will then try to create the same table twice. One
+generated file per migration, hand-written SQL appended to it, one journal entry.
+
+`migrations/meta/_journal.json` and the snapshots are generated. Never hand-edit
+them: `migrate` reads the journal, so a hand-written file with no entry never
+runs, and `generate` diffs the snapshot to produce the next migration.
+
+Neither `drizzle-kit` nor this package's vitest config loads `.env`. Export it
+into the shell first, or `db:generate`/`db:migrate` die with `url: ''`:
+
+```bash
+set -a; . ../../.env; set +a
+```
+
+Migrations run against `DATABASE_URL_DIRECT`; DDL needs session state a
+transaction pooler will not hold.

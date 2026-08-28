@@ -25,6 +25,10 @@
     "./normalize": {
       "types": "./dist/normalize.d.ts",
       "import": "./dist/normalize.js"
+    },
+    "./extract": {
+      "types": "./dist/extract.d.ts",
+      "import": "./dist/extract.js"
     }
   },
   "scripts": {

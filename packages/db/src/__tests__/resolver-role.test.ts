@@ -101,6 +101,19 @@ afterAll(async () => {
 function asResolver<T>(fn: (tx: postgres.TransactionSql) => Promise<T>): Promise<T> {
   return sql.begin(async (tx) => {
     await tx`set local role resolver_role`;
+    // Prove the role actually took effect before running the caller's query.
+    //
+    // Without this, every negative control below is a test that cannot fail in
+    // the way that matters: `set local role` itself fails with "permission
+    // denied to set role resolver_role" when the GRANT is missing, and that
+    // string matches the /permission denied/i these tests assert. So they would
+    // go green while never once running as the role — including before the role
+    // existed at all. Asserting current_user turns a lost GRANT into a loud
+    // failure instead of eight silent false passes.
+    const [who] = await tx<{ current_user: string }[]>`select current_user`;
+    if (who?.current_user !== 'resolver_role') {
+      throw new Error(`expected to be running as resolver_role, got ${who?.current_user}`);
+    }
     return fn(tx);
   }) as Promise<T>;
 }
@@ -132,8 +145,15 @@ describe('resolver_role — what it cannot reach', () => {
     async (table) => {
       // Not "returns no rows" — that is what a policy does. This must be a
       // privilege error, because the role holds no grant on these tables.
+      //
+      // `for table` is load-bearing, not decoration. A bare /permission denied/i
+      // also matches "permission denied to set role resolver_role", which is what
+      // `set local role` raises when the GRANT is missing — and that throw happens
+      // before asResolver's current_user guard can run, so the bare matcher would
+      // stay green while the suite never ran as the role at all. The live text
+      // here is "permission denied for table leads".
       const attempt = asResolver((tx) => tx.unsafe(`select * from public.${table} limit 1`));
-      await expect(attempt).rejects.toThrow(/permission denied/i);
+      await expect(attempt).rejects.toThrow(/permission denied for table/i);
     },
   );
 
@@ -142,21 +162,32 @@ describe('resolver_role — what it cannot reach', () => {
     // which runs authenticated as `postgres` — not this role's.
     await expect(
       asResolver((tx) => tx`update lead_sources set label = 'hijacked' where id = ${sourceId}`),
-    ).rejects.toThrow(/permission denied/i);
+    ).rejects.toThrow(/permission denied for table/i);
     await expect(
       asResolver((tx) => tx`delete from lead_sources where id = ${sourceId}`),
-    ).rejects.toThrow(/permission denied/i);
+    ).rejects.toThrow(/permission denied for table/i);
   });
 
-  it('ingest_admit is SECURITY INVOKER, not DEFINER', async () => {
-    // A DEFINER function owned by postgres would execute with the owner's
-    // privileges, which would make every grant assertion above meaningless.
-    const [fn] = await sql<{ prosecdef: boolean }[]>`
-      select prosecdef from pg_proc
-      where proname = 'ingest_admit' and pronamespace = 'public'::regnamespace
-    `;
-    expect(fn!.prosecdef).toBe(false);
-  });
+  it.each(['ingest_admit', 'bump_rate_counter'])(
+    '%s is SECURITY INVOKER with a pinned search_path, not DEFINER',
+    async (fnName) => {
+      // A DEFINER function owned by postgres would execute with the owner's
+      // privileges, which would make every grant assertion above meaningless.
+      // bump_rate_counter is checked too: it is where the counter writes happen,
+      // so flipping it to DEFINER would hand any caller of ingest_admit write
+      // access to the counters regardless of their own grants.
+      //
+      // proconfig pins search_path to '': these functions are reachable from a
+      // public endpoint, and an unpinned search_path on such a function is a
+      // privilege-escalation vector.
+      const [fn] = await sql<{ prosecdef: boolean; proconfig: string[] | null }[]>`
+        select prosecdef, proconfig from pg_proc
+        where proname = ${fnName} and pronamespace = 'public'::regnamespace
+      `;
+      expect(fn!.prosecdef).toBe(false);
+      expect(fn!.proconfig).toEqual(['search_path=""']);
+    },
+  );
 
   it('can see every tenant\'s tokens — that IS the lookup', async () => {
     // USING (true) on lead_sources is not a gap. The worst a bug on this path
@@ -179,7 +210,7 @@ describe('ingest_admit — token resolution', () => {
   });
 
   it('returns unknown for a token that does not exist', async () => {
-    const row = await admit(`no-such-token-${RUN}`, '2.2.2.2');
+    const row = await admit(`no-such-token-${RUN}`, `2.2.2.${RUN}`);
     expect(row.customer_id).toBeNull();
     expect(row.source_id).toBeNull();
     expect(row.token_state).toBe('unknown');
@@ -187,8 +218,8 @@ describe('ingest_admit — token resolution', () => {
   });
 
   it('never resolves one tenant\'s token to another tenant', async () => {
-    const mine = await admit(currentToken, '3.3.3.3');
-    const theirs = await admit(otherToken, '3.3.3.3');
+    const mine = await admit(currentToken, `3.3.3.${RUN}`);
+    const theirs = await admit(otherToken, `3.3.3.${RUN}`);
     expect(mine.customer_id).toBe(customerId);
     expect(theirs.customer_id).toBe(otherCustomerId);
     expect(theirs.customer_id).not.toBe(mine.customer_id);
@@ -202,15 +233,15 @@ describe('ingest_admit — token resolution', () => {
       set revoked_at = now(), webhook_token = null, webhook_token_previous = null
       where id = ${seeded.sourceId}
     `;
-    const row = await admit(seeded.token, '4.4.4.4');
+    const row = await admit(seeded.token, `4.4.4.${RUN}`);
     expect(row.token_state).toBe('unknown');
     expect(row.customer_id).toBeNull();
     await sql`delete from customers where id = ${seeded.customerId}`;
   });
 
   it('is case-sensitive and does not match a prefix', async () => {
-    expect((await admit(currentToken.toUpperCase(), '5.5.5.5')).token_state).toBe('unknown');
-    expect((await admit(currentToken.slice(0, -1), '5.5.5.5')).token_state).toBe('unknown');
+    expect((await admit(currentToken.toUpperCase(), `5.5.5.${RUN}`)).token_state).toBe('unknown');
+    expect((await admit(currentToken.slice(0, -1), `5.5.5.${RUN}`)).token_state).toBe('unknown');
   });
 });
 
@@ -224,7 +255,7 @@ describe('ingest_admit — the rotation overlap window', () => {
           token_rotated_at = now() - interval '71 hours'
       where id = ${seeded.sourceId}
     `;
-    const row = await admit(seeded.token, '6.6.6.6');
+    const row = await admit(seeded.token, `6.6.6.${RUN}`);
     // The lead is still ingested — a rotation must not silently drop real leads.
     expect(row.customer_id).toBe(seeded.customerId);
     expect(row.token_state).toBe('previous');
@@ -241,7 +272,7 @@ describe('ingest_admit — the rotation overlap window', () => {
           token_rotated_at = now() - interval '73 hours'
       where id = ${seeded.sourceId}
     `;
-    const row = await admit(seeded.token, '7.7.7.7');
+    const row = await admit(seeded.token, `7.7.7.${RUN}`);
     expect(row.token_state).toBe('unknown');
     expect(row.customer_id).toBeNull();
     await sql`delete from customers where id = ${seeded.customerId}`;
@@ -258,18 +289,24 @@ describe('ingest_admit — the rotation overlap window', () => {
           token_rotated_at = null
       where id = ${seeded.sourceId}
     `;
-    const row = await admit(seeded.token, '8.8.8.8');
+    const row = await admit(seeded.token, `8.8.8.${RUN}`);
     expect(row.token_state).toBe('unknown');
     await sql`delete from customers where id = ${seeded.customerId}`;
   });
 
   it('prefers the current token when a string somehow sits in both columns', async () => {
     const seeded = await seedTenant('both-columns');
+    // The SAME string in both columns, with a rotation stamp far outside the 72h
+    // overlap. Writing a *different* value to webhook_token_previous would make
+    // this a duplicate of the happy path: it would pass even if the current/
+    // previous lookup order were inverted, which is the one thing it exists to
+    // pin. With one string in both columns and a stale stamp, an inverted order
+    // resolves 'unknown' (the previous branch rejects on age) and this fails.
     await sql`
-      update lead_sources set webhook_token_previous = ${`${seeded.token}-old`},
-        token_rotated_at = now() where id = ${seeded.sourceId}
+      update lead_sources set webhook_token_previous = ${seeded.token},
+        token_rotated_at = now() - interval '100 hours' where id = ${seeded.sourceId}
     `;
-    expect((await admit(seeded.token, '9.9.9.9')).token_state).toBe('current');
+    expect((await admit(seeded.token, `9.9.9.${RUN}`)).token_state).toBe('current');
     await sql`delete from customers where id = ${seeded.customerId}`;
   });
 });

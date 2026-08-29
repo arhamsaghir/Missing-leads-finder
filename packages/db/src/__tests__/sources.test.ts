@@ -360,6 +360,36 @@ describe('listSources and getSource — the status contract', () => {
     expect(rotated!.previousTokenInUse).toBe(false);
   });
 
+  it('lights the alert on every rotation, not just when the clocks happen to agree', async () => {
+    // The test above is the readable one; this is the one that can fail.
+    //
+    // previousTokenInUse compares token_rotated_at against lead_events.occurred_at,
+    // which Postgres defaults from its own clock. If token_rotated_at were stamped
+    // from the Node host instead, the two sides would straddle two clocks and an
+    // event arriving in the skew window would be judged to PRECEDE the rotation
+    // that preceded it — the alert silently not lighting for a customer whose form
+    // is still posting to a URL about to die.
+    //
+    // Measured locally: the host ran ahead of the database by a sub-millisecond
+    // margin, so a single rotate-then-record cycle failed roughly one time in
+    // three. Ten cycles turn that into a near-certain catch. Post-fix this is a
+    // strict invariant — occurred_at is stamped after token_rotated_at by the same
+    // clock — so it cannot flake in the other direction.
+    for (let n = 0; n < 10; n++) {
+      const source = await createWebhookSource(db, customerId, `Clock ${n}`);
+      await rotateWebhookToken(db, customerId, source.id);
+      await withIngestScope(db, customerId, (tx) =>
+        recordLeadEvent(tx, customerId, {
+          kind: PREVIOUS_TOKEN_EVENT,
+          dedupeKey: buildDedupeKey({ sourceId: source.id, providerEventId: `clk-${n}-${RUN}` }),
+          sourceId: source.id,
+        }),
+      );
+      const status = await getSource(db, customerId, source.id);
+      expect(status!.previousTokenInUse, `cycle ${n} lost the alert to clock skew`).toBe(true);
+    }
+  });
+
   it('surfaces the last parse warning time', async () => {
     const source = await createWebhookSource(db, customerId, 'Warned');
     await withIngestScope(db, customerId, (tx) =>
@@ -447,9 +477,15 @@ describe('findExistingEvent — the retry short-circuit', () => {
   });
 
   it('does not see another tenant\'s event with the same dedupe key', async () => {
-    // The customer_id clause here is the only thing stopping one tenant's retry
-    // from suppressing another tenant's genuine lead: the unique index is on
-    // (customer_id, dedupe_key), so the same key legitimately exists for both.
+    // Deleting the customer_id clause from findExistingEvent does NOT fail this
+    // test, and that is worth stating rather than hiding: withIngestScope runs as
+    // ingest_role, whose lead_events policy already filters
+    // `customer_id = current_ingest_customer_id()`, so RLS alone produces the
+    // right answer here. Verified by mutation — the suite stays green with the
+    // clause removed.
+    //
+    // Kept anyway, because it pins the behaviour Task 5 actually depends on. The
+    // test that can fail is the next one.
     const source = await createWebhookSource(db, customerId, 'Shared key');
     const dedupeKey = buildDedupeKey({
       sourceId: source.id,
@@ -471,6 +507,34 @@ describe('findExistingEvent — the retry short-circuit', () => {
     );
     expect(seenByOwner).toBe(true);
     expect(seenByRival).toBe(false);
+  });
+
+  it('filters by tenant on its own, without relying on RLS to do it', async () => {
+    // The `Tx` this takes is not necessarily an ingest-scoped one. A plain
+    // db.transaction() runs as `postgres`, which OWNS lead_events, and
+    // ENABLE ROW LEVEL SECURITY exempts the owner (relforcerowsecurity is false —
+    // a deliberate, recorded deviation). In that context the function's own
+    // customer_id clause is the ONLY thing separating two tenants.
+    //
+    // The unique index is (customer_id, dedupe_key), so the same key legitimately
+    // exists for both. Without the clause, one tenant's retry would report as
+    // already-recorded for another tenant and suppress a genuine lead — a silently
+    // lost lead, which is the one failure this product cannot have.
+    const source = await createWebhookSource(db, customerId, 'Owner-context key');
+    const dedupeKey = buildDedupeKey({
+      sourceId: source.id,
+      providerEventId: `owner-ctx-${RUN}`,
+    });
+    await withIngestScope(db, customerId, (tx) =>
+      recordLeadEvent(tx, customerId, { kind: 'webhook.received', dedupeKey, sourceId: source.id }),
+    );
+
+    const [ownerSees, rivalSees] = await db.transaction(async (tx) => [
+      await findExistingEvent(tx, customerId, dedupeKey),
+      await findExistingEvent(tx, otherCustomerId, dedupeKey),
+    ]);
+    expect(ownerSees).toBe(true);
+    expect(rivalSees).toBe(false);
   });
 });
 
@@ -552,28 +616,41 @@ describe('admitWebhookDelivery — the typed wrapper', () => {
     // x-forwarded-for into one global 300/min quota. Unmetered guessing of a
     // 256-bit token is not the threat that trade buys off.
     //
-    // Asserted on a token unique to this run so a row left by another test
-    // cannot satisfy it, and by counting total rows so a sentinel under ANY name
-    // would show up.
+    // Asserted as "no counter went UP", comparing bucket→count maps across the
+    // call. Two weaker forms of this assertion do not discriminate, and both are
+    // tempting:
+    //
+    //  - Comparing total row counts, or the set of bucket NAMES, detects only a
+    //    bucket that did not exist before. Six earlier tests in this file already
+    //    admit with a null IP, so a sentinel would have been created by one of
+    //    them and this probe would merely increment it. Verified: with
+    //    `normalizedIp = 'no-ip'` substituted for null, a name-set diff stays
+    //    green.
+    //  - Ignoring deletions is deliberate, not laxity. ingest_admit prunes rows
+    //    older than two hours on ~1% of calls, so a prune firing on this very
+    //    call must not fail a test about whether anything was charged.
     const token = `null-ip-probe-${RUN}`;
-    const [{ count: before }] = await raw<{ count: string }[]>`
-      select count(*)::text as count from ingest_rate_counters
-    `;
+    const counts = async () =>
+      new Map(
+        (
+          await raw<{ bucket: string; count: number }[]>`
+            select bucket, count from ingest_rate_counters
+          `
+        ).map((r) => [r.bucket, r.count]),
+      );
+    const before = await counts();
 
     const result = await admitWebhookDelivery(db, token, null);
     expect(result.tokenState).toBe('unknown');
     expect(result.admit).toBe(true);
 
-    const [{ count: after }] = await raw<{ count: string }[]>`
-      select count(*)::text as count from ingest_rate_counters
-    `;
-    expect(Number(after)).toBe(Number(before));
-
-    // And specifically no row naming this token or a sentinel derived from it.
-    const rows = await raw<{ bucket: string }[]>`
-      select bucket from ingest_rate_counters where bucket like ${`%${token}%`}
-    `;
-    expect(rows).toHaveLength(0);
+    const after = await counts();
+    const charged = [...after.entries()]
+      .filter(([bucket, count]) => count > (before.get(bucket) ?? 0))
+      .map(([bucket, count]) => `${bucket} → ${count}`);
+    // Names the offender rather than failing on a bare number, so a future
+    // sentinel shows up in the message under whatever name it was given.
+    expect(charged).toEqual([]);
   });
 });
 

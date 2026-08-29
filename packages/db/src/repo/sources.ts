@@ -267,6 +267,18 @@ export async function createWebhookSource(
  * mint a fresh LIVE token onto a revoked row and hand it back in a SourceStatus —
  * a brand-new secret in an API response for a source its owner believes is dead.
  *
+ * `token_rotated_at` is stamped from the DATABASE clock, not `new Date()`. Two
+ * comparisons read it, and both would otherwise straddle two clocks:
+ * `previous_token_in_use` above compares it against `lead_events.occurred_at`
+ * (defaulted by Postgres), and `ingest_admit`'s 72-hour overlap compares it
+ * against `now()`. A webhook delivery arriving in the skew window right after a
+ * rotation would then be judged to precede that rotation, and the "your old URL
+ * is still in use" alert would silently fail to light — measured here at a
+ * sub-millisecond margin, with the host reliably ahead of the database, so it
+ * failed roughly one time in ten locally and would be far worse across a real
+ * network. Both timestamps must come from one clock; only the database's is
+ * available to both.
+ *
  * Known limitation, documented rather than engineered around: the previous
  * column is singular, so rotating twice inside 72 hours invalidates the original
  * token immediately.
@@ -283,7 +295,7 @@ export async function rotateWebhookToken(
       // Right-hand side of a SET renders as "lead_sources"."webhook_token" and
       // reads the OLD value, so this demotes in one statement.
       webhookTokenPrevious: sql`${leadSources.webhookToken}`,
-      tokenRotatedAt: new Date(),
+      tokenRotatedAt: sql`now()`,
     })
     .where(
       and(

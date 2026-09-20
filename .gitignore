@@ -45,3 +45,7 @@ src/**/*.d.ts.map
 .codegraph
 .DS_Store
 .git.broken.nosync/
+
+# local tooling scratch — not project code
+.ua/
+sqlite_mcp_server.db

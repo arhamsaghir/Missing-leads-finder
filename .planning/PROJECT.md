@@ -21,8 +21,8 @@ missed-revenue alerts; add backend + multi-tenant persistence.
 
 **Target features:**
 - ~~Backend service + multi-tenant database (Vercel serverless)~~ ✅ Phase 1
-- Webhook ingestion endpoint (unique URL per customer) ← Phase 2, next
-- Email-forwarding ingestion (unique inbound inbox → parse → normalize)
+- ~~Webhook ingestion endpoint (unique URL per customer)~~ ✅ Phase 2
+- Email-forwarding ingestion (unique inbound inbox → parse → normalize) ← Phase 3
 - Continuous leak detection + push notifications (Expo push + PWA web push)
 - Non-technical onboarding flows (paste webhook URL / add email filter)
 
@@ -48,8 +48,51 @@ missed-revenue alerts; add backend + multi-tenant persistence.
 - Drizzle + Supabase RLS API surface verified against installed packages
   (`.planning/research/DRIZZLE-RLS-VERIFIED.md`)
 
+**Phase 2 (2026-09-20):**
+- Public webhook ingest at `POST /api/hook/<token>`, JSON and form-encoded
+- `resolver_role` + `ingest_admit` — the pre-tenant lookup as a DB-enforced
+  boundary, not a convention
+- Rate limiting in Postgres: three buckets, one-minute windows, self-pruning
+- Token rotation with a 72-hour overlap enforced at lookup time
+- Provisioning API: list, create, get, revoke, rotate, with live status
+- Provider-agnostic extraction (`packages/core/src/extract.ts`), no adapters
+
 ## Key Decisions
 
+- **2026-09-20 — `resolver_role` for the pre-tenant lookup, not `postgres`.**
+  Resolving a token to a tenant cannot run inside `withIngestScope`: the
+  `lead_sources` policy filters on the `customer_id` the lookup is trying to
+  produce. Running it as `postgres` would work, but `ENABLE ROW LEVEL SECURITY`
+  exempts the table owner, so a bug there could read any table. A second
+  `NOBYPASSRLS` role with grants on `lead_sources` and the rate counters and
+  nothing else makes the worst case "confirm whether a token exists".
+- **2026-09-20 — `ingest_admit` is `SECURITY INVOKER`.** A `DEFINER` function
+  owned by `postgres` would execute with the owner's privileges and make the
+  narrow grant list decorative. `prosecdef = false` is asserted by test, because
+  a future `CREATE OR REPLACE` could flip it silently.
+- **2026-09-20 — rate counters commit outside the ingest transaction.** If they
+  shared it, a retry storm whose deliveries all deduped would roll its own
+  counters back and abuse would be free.
+- **2026-09-20 — extraction refuses rather than guesses.** An email found only
+  under `from`/`reply_to`/`owner` is the business's own address, identical on
+  every submission, and would collapse the whole dataset onto one identity. A
+  bare 10-digit run is as likely an order id as a phone, and a wrong phone merges
+  two unrelated humans. Both are dropped with a `parse_warning`. `mergeLeadFields`
+  is monotonic, so a bad merge cannot be undone once revenue is attributed.
+- **2026-09-20 — `estimatedValue` is never extracted from a payload.** Guessing a
+  dollar figure out of arbitrary JSON writes straight into the headline number.
+  A per-source average ticket is a settings decision, not a parsing one.
+- **2026-09-20 — unknown tokens return 404, not a silent 200.** It tells a
+  scanner nothing it did not already know, and it appears in the form tool's own
+  delivery log — the only way an owner discovers they pasted the URL wrong. A
+  silent 200 makes a permanently broken integration look healthy forever.
+- **2026-09-20 — `FORCE ROW LEVEL SECURITY` stays off, deviating from the Phase 1
+  plan.** `phase-1-foundation.md` §B said force would be applied; migration 0000
+  only ever used `ENABLE`. Leaving it: `ENABLE` exempts the owner, which is what
+  the pre-tenant lookup, the provisioning handlers, and test seeding all depend
+  on. `ingest_role` and `resolver_role` are not owners and are already fully
+  subject to policy, and the negative control proves the policies bind for them.
+  Revisit if provisioning ever moves off the owner role.
 - **2026-08-24 — Auth + DB: Supabase for both.** Not Neon, despite the research
   doc. RLS policies need `auth.uid()`; with one vendor they read the verified JWT
   natively, so isolation genuinely lives in the DB. Neon's stateless HTTP driver
@@ -98,6 +141,21 @@ missed-revenue alerts; add backend + multi-tenant persistence.
 - **The parser silently disabled three of four leak rules.** `last_contact_at`
   and `next_follow_up_at` were header-mapped but never written, so every CSV
   lead looked unanswered. Worth re-checking whenever the Lead shape changes.
+- **`drizzle-kit generate` needs the schema to be CJS-resolvable.** drizzle-kit
+  `require()`s the schema file. Making `packages/core` ESM-only broke every
+  `generate` with `ERR_PACKAGE_PATH_NOT_EXPORTED`, and nobody noticed for four
+  commits because no migration was generated in between. A `default` condition in
+  the `exports` map plus `.js` extensions on relative specifiers fixes it. Run
+  `db:generate` after touching package exports, even when no schema changed.
+- **`--custom` writes a snapshot identical to the previous one.** So a schema
+  change made in the same commit becomes invisible to the next `generate`, which
+  then tries to create the same table twice. Generate normally and append raw SQL
+  to the file it produced.
+- **The raw-SQL path returns timestamps as strings.** `db.execute()` runs raw SQL
+  and postgres.js hands `timestamptz` back as text there, not a `Date` — unlike
+  the typed query path. A mapper that trusts the column to be a `Date` typechecks
+  green and only throws when something calls `.toISOString()`. Coerce at the repo
+  boundary so the returned type is honest.
 
 ## Evolution
 
@@ -118,4 +176,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-08-23*
+*Last updated: 2026-09-20*

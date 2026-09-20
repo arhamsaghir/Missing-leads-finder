@@ -143,13 +143,17 @@ type StatusRow = {
   label: string;
   kind: 'webhook' | 'email' | 'csv';
   webhook_token: string | null;
-  created_at: Date;
-  revoked_at: Date | null;
-  last_event_at: Date | null;
+  // db.execute() runs raw SQL, and postgres.js hands timestamptz back over that
+  // path as a text string, not a Date — unlike the ORM's typed query path. Typed
+  // honestly here so toStatus is forced to coerce; otherwise SourceStatus claims
+  // a Date it does not have and toResponse's .toISOString() throws.
+  created_at: Date | string;
+  revoked_at: Date | string | null;
+  last_event_at: Date | string | null;
   event_count: string;
   lead_count: string;
   previous_token_in_use: boolean;
-  last_parse_warning_at: Date | null;
+  last_parse_warning_at: Date | string | null;
 };
 
 /**
@@ -186,8 +190,20 @@ function statusSelect(customerId: string, sourceId?: string) {
           and e.kind = ${PREVIOUS_TOKEN_EVENT}
           -- Only since the latest rotation. Without this bound, one hit would
           -- light the "your old URL is still in use" alert permanently.
+          --
+          -- Bounded on created_at, NOT occurred_at, and the difference is
+          -- load-bearing. occurred_at is caller-supplied — Task 5's
+          -- recordPreviousTokenUse passes the handler's own new Date() — so
+          -- comparing it against a database-stamped token_rotated_at straddles
+          -- two clocks, and a host running even a millisecond behind makes a
+          -- delivery that arrived AFTER the rotation look as though it preceded
+          -- it. The alert then silently fails to light for the one customer whose
+          -- form is about to break. created_at has no override path (default
+          -- now(), never set by recordLeadEvent), so both sides of this
+          -- comparison come from the database and the ordering is the real one:
+          -- was this delivery recorded before or after the rotation.
           and s.token_rotated_at is not null
-          and e.occurred_at >= s.token_rotated_at
+          and e.created_at >= s.token_rotated_at
       ) as previous_token_in_use,
       (select max(e.occurred_at) from public.lead_events e
          where e.customer_id = ${customerId}
@@ -200,19 +216,25 @@ function statusSelect(customerId: string, sourceId?: string) {
   `;
 }
 
+/** Coerce a timestamptz that arrived from the raw-SQL path as text (see
+ *  StatusRow) into the Date the SourceStatus contract promises. A value that is
+ *  already a Date passes through unchanged. */
+const asDate = (v: Date | string): Date => (v instanceof Date ? v : new Date(v));
+const asDateOrNull = (v: Date | string | null): Date | null => (v == null ? null : asDate(v));
+
 function toStatus(row: StatusRow): SourceStatus {
   return {
     id: row.id,
     label: row.label,
     kind: row.kind,
     webhookToken: row.webhook_token,
-    createdAt: row.created_at,
-    revokedAt: row.revoked_at,
-    lastEventAt: row.last_event_at,
+    createdAt: asDate(row.created_at),
+    revokedAt: asDateOrNull(row.revoked_at),
+    lastEventAt: asDateOrNull(row.last_event_at),
     eventCount: Number(row.event_count),
     leadCount: Number(row.lead_count),
     previousTokenInUse: row.previous_token_in_use,
-    lastParseWarningAt: row.last_parse_warning_at,
+    lastParseWarningAt: asDateOrNull(row.last_parse_warning_at),
   };
 }
 

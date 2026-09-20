@@ -360,34 +360,53 @@ describe('listSources and getSource — the status contract', () => {
     expect(rotated!.previousTokenInUse).toBe(false);
   });
 
-  it('lights the alert on every rotation, not just when the clocks happen to agree', async () => {
+  it('lights the alert even when the caller stamps occurred_at from a lagging clock', async () => {
     // The test above is the readable one; this is the one that can fail.
     //
-    // previousTokenInUse compares token_rotated_at against lead_events.occurred_at,
-    // which Postgres defaults from its own clock. If token_rotated_at were stamped
-    // from the Node host instead, the two sides would straddle two clocks and an
-    // event arriving in the skew window would be judged to PRECEDE the rotation
-    // that preceded it — the alert silently not lighting for a customer whose form
-    // is still posting to a URL about to die.
+    // Task 5 calls recordPreviousTokenUse with `receivedAt` — the handler's own
+    // `new Date()` — so occurred_at is HOST-stamped while token_rotated_at is
+    // DATABASE-stamped. Comparing those two straddles two clocks, and a host even
+    // a millisecond behind makes a delivery that arrived AFTER a rotation look as
+    // though it preceded it. The alert then silently fails to light for the one
+    // customer whose form is about to break.
     //
-    // Measured locally: the host ran ahead of the database by a sub-millisecond
-    // margin, so a single rotate-then-record cycle failed roughly one time in
-    // three. Ten cycles turn that into a near-certain catch. Post-fix this is a
-    // strict invariant — occurred_at is stamped after token_rotated_at by the same
-    // clock — so it cannot flake in the other direction.
-    for (let n = 0; n < 10; n++) {
-      const source = await createWebhookSource(db, customerId, `Clock ${n}`);
-      await rotateWebhookToken(db, customerId, source.id);
-      await withIngestScope(db, customerId, (tx) =>
-        recordLeadEvent(tx, customerId, {
-          kind: PREVIOUS_TOKEN_EVENT,
-          dedupeKey: buildDedupeKey({ sourceId: source.id, providerEventId: `clk-${n}-${RUN}` }),
-          sourceId: source.id,
-        }),
-      );
-      const status = await getSource(db, customerId, source.id);
-      expect(status!.previousTokenInUse, `cycle ${n} lost the alert to clock skew`).toBe(true);
-    }
+    // 60 seconds of lag rather than a millisecond: the bug is a race, and racing
+    // it is what a probabilistic test does. Exaggerating the skew makes the same
+    // assertion deterministic — it fails on every run against occurred_at and
+    // passes on every run against created_at, which has no override path.
+    const source = await createWebhookSource(db, customerId, 'Lagging clock');
+    await rotateWebhookToken(db, customerId, source.id);
+
+    await withIngestScope(db, customerId, (tx) =>
+      recordLeadEvent(tx, customerId, {
+        kind: PREVIOUS_TOKEN_EVENT,
+        dedupeKey: buildDedupeKey({ sourceId: source.id, providerEventId: `lag-${RUN}` }),
+        sourceId: source.id,
+        occurredAt: new Date(Date.now() - 60_000),
+      }),
+    );
+
+    const status = await getSource(db, customerId, source.id);
+    expect(status!.previousTokenInUse).toBe(true);
+  });
+
+  it('does not light the alert for an ordinary delivery after a rotation', async () => {
+    // The kind filter. Without it previousTokenInUse degrades to "any event since
+    // the last rotation", so every source that receives one normal lead after a
+    // rotation tells its owner the old URL is still in use — permanently, for a
+    // URL that is fine. Owners then learn to ignore the one warning that means
+    // their form is about to break.
+    const source = await createWebhookSource(db, customerId, 'Normal after rotate');
+    await rotateWebhookToken(db, customerId, source.id);
+    await withIngestScope(db, customerId, (tx) =>
+      recordLeadEvent(tx, customerId, {
+        kind: 'webhook.received',
+        dedupeKey: buildDedupeKey({ sourceId: source.id, providerEventId: `norm-${RUN}` }),
+        sourceId: source.id,
+      }),
+    );
+    const status = await getSource(db, customerId, source.id);
+    expect(status!.previousTokenInUse).toBe(false);
   });
 
   it('surfaces the last parse warning time', async () => {
@@ -402,6 +421,68 @@ describe('listSources and getSource — the status contract', () => {
     );
     const status = await getSource(db, customerId, source.id);
     expect(status!.lastParseWarningAt).not.toBeNull();
+  });
+
+  it('leaves lastParseWarningAt null when every delivery parsed cleanly', async () => {
+    // The negative half of the test above, and the one that can fail: without the
+    // `jsonb_array_length(parse_warnings) > 0` filter, lastParseWarningAt collapses
+    // into lastEventAt and every healthy source wears a parse-warning badge. The
+    // badge then means nothing, so a genuinely broken form looks like all the
+    // others.
+    const source = await createWebhookSource(db, customerId, 'Clean parse');
+    await withIngestScope(db, customerId, (tx) =>
+      recordLeadEvent(tx, customerId, {
+        kind: 'webhook.received',
+        dedupeKey: buildDedupeKey({ sourceId: source.id, providerEventId: `clean-${RUN}` }),
+        sourceId: source.id,
+      }),
+    );
+    const status = await getSource(db, customerId, source.id);
+    expect(status!.lastEventAt).not.toBeNull();
+    expect(status!.lastParseWarningAt).toBeNull();
+  });
+
+  it('keeps every per-source column correlated to its own row across a list', async () => {
+    // Everything above reads one source at a time, and with a single row a
+    // correlated subquery and an uncorrelated one return the same answer. So each
+    // of `last_event_at`, `previous_token_in_use`, and `last_parse_warning_at`
+    // could lose its `e.source_id = s.id` correlation and no test would notice.
+    //
+    // What that costs an owner: a working Typeform and a broken Calendly would
+    // report the same last-event time and both show the old-URL alert. They could
+    // not tell which integration is broken, which is the only job this screen has.
+    //
+    // Two sources under one tenant, deliberately opposite: one noisy (rotated,
+    // then a previous-token delivery carrying a parse warning), one quiet
+    // (rotated, never posted to).
+    const noisy = await createWebhookSource(db, customerId, 'Noisy integration');
+    const quiet = await createWebhookSource(db, customerId, 'Quiet integration');
+    await rotateWebhookToken(db, customerId, noisy.id);
+    await rotateWebhookToken(db, customerId, quiet.id);
+
+    await withIngestScope(db, customerId, (tx) =>
+      recordLeadEvent(tx, customerId, {
+        kind: PREVIOUS_TOKEN_EVENT,
+        dedupeKey: buildDedupeKey({ sourceId: noisy.id, providerEventId: `noisy-${RUN}` }),
+        sourceId: noisy.id,
+        parseWarnings: ['nothing_extracted'],
+      }),
+    );
+
+    const listed = await listSources(db, customerId);
+    const gotNoisy = listed.find((s) => s.id === noisy.id)!;
+    const gotQuiet = listed.find((s) => s.id === quiet.id)!;
+
+    expect(gotNoisy.lastEventAt).not.toBeNull();
+    expect(gotNoisy.previousTokenInUse).toBe(true);
+    expect(gotNoisy.lastParseWarningAt).not.toBeNull();
+
+    // The quiet source is the assertion that matters: every one of these is null
+    // or false only if the subquery is correlated to its own row.
+    expect(gotQuiet.lastEventAt).toBeNull();
+    expect(gotQuiet.previousTokenInUse).toBe(false);
+    expect(gotQuiet.lastParseWarningAt).toBeNull();
+    expect(gotQuiet.eventCount).toBe(0);
   });
 
   it('lists only the calling tenant\'s sources', async () => {

@@ -14,8 +14,13 @@ export function json(body: unknown, status = 200, headers: Record<string, string
  * belongs to. "Not found" and "not yours" must be indistinguishable from
  * outside, or the API becomes an enumeration oracle.
  */
-export function problem(status: number, code: string, message?: string): Response {
-  return json({ error: { code, message: message ?? code } }, status);
+export function problem(
+  status: number,
+  code: string,
+  message?: string,
+  headers: Record<string, string> = {},
+): Response {
+  return json({ error: { code, message: message ?? code } }, status, headers);
 }
 
 export function methodNotAllowed(allowed: string[]): Response {

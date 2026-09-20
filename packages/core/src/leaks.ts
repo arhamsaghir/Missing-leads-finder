@@ -1,4 +1,5 @@
-import type { Lead } from './parser';
+import type { Lead } from './parser.js';
+import { isTerminalStatus } from './parser.js';
 
 export type LeakType = 'no_reply' | 'slow_reply' | 'no_follow_up' | 'stale_quote';
 
@@ -16,9 +17,21 @@ export interface LeakSummary {
   leads: LeadWithLeaks[];
 }
 
-const SLOW_REPLY_HOURS = 24;
-const STALE_QUOTE_DAYS = 7;
-const TERMINAL_STATUSES = ['booked', 'lost', 'recovered', 'won'] as const;
+/**
+ * Per-customer detection thresholds. Persisted in `detection_settings` and
+ * passed in per tenant; the defaults below are the product defaults.
+ */
+export interface DetectionConfig {
+  /** Hours after created_at before a reply counts as slow. */
+  slowReplyHours: number;
+  /** Days a qualified lead can sit since last contact before going stale. */
+  staleQuoteDays: number;
+}
+
+export const DEFAULT_DETECTION_CONFIG: DetectionConfig = {
+  slowReplyHours: 24,
+  staleQuoteDays: 7,
+};
 
 function parseDate(dateStr?: string): Date | null {
   if (!dateStr) return null;
@@ -34,14 +47,18 @@ function daysBetween(start: Date, end: Date): number {
   return (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
 }
 
-export function detectLeaks(leads: Lead[], now: Date = new Date()): LeakSummary {
+export function detectLeaks(
+  leads: Lead[],
+  now: Date = new Date(),
+  config: DetectionConfig = DEFAULT_DETECTION_CONFIG,
+): LeakSummary {
   const leadsWithLeaks: LeadWithLeaks[] = [];
   const leakCounts = { noReply: 0, slowReply: 0, noFollowUp: 0, staleQuote: 0 };
 
   for (const lead of leads) {
     const leaks: LeakType[] = [];
     const status = lead.status.toLowerCase();
-    const isTerminal = TERMINAL_STATUSES.includes(status as any);
+    const isTerminal = isTerminalStatus(status);
 
     const createdAt = parseDate(lead.created_at);
     const lastContactAt = parseDate(lead.last_contact_at);
@@ -53,8 +70,8 @@ export function detectLeaks(leads: Lead[], now: Date = new Date()): LeakSummary 
       leakCounts.noReply++;
     }
 
-    // slow_reply: reply > 24h after created AND not terminal
-    if (createdAt && lastContactAt && hoursBetween(createdAt, lastContactAt) > SLOW_REPLY_HOURS && !isTerminal) {
+    // slow_reply: reply later than the configured window AND not terminal
+    if (createdAt && lastContactAt && hoursBetween(createdAt, lastContactAt) > config.slowReplyHours && !isTerminal) {
       leaks.push('slow_reply');
       leakCounts.slowReply++;
     }
@@ -65,8 +82,8 @@ export function detectLeaks(leads: Lead[], now: Date = new Date()): LeakSummary 
       leakCounts.noFollowUp++;
     }
 
-    // stale_quote: status qualified AND last_contact_at > 7 days ago
-    if (status === 'qualified' && lastContactAt && daysBetween(lastContactAt, now) > STALE_QUOTE_DAYS) {
+    // stale_quote: qualified AND last contact older than the configured window
+    if (status === 'qualified' && lastContactAt && daysBetween(lastContactAt, now) > config.staleQuoteDays) {
       leaks.push('stale_quote');
       leakCounts.staleQuote++;
     }

@@ -1,0 +1,37 @@
+{
+  "name": "@missed-lead/db",
+  "version": "1.0.0",
+  "description": "Multi-tenant schema, migrations, and repositories for Missed Lead",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema/index.d.ts",
+      "import": "./dist/schema/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:prove-isolation": "bash scripts/prove-isolation.sh",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@missed-lead/core": "file:../core",
+    "drizzle-orm": "0.45.2",
+    "postgres": "3.4.9"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.58.0",
+    "drizzle-kit": "0.31.10",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.10"
+  }
+}

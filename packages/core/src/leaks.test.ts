@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectLeaks } from './leaks';
+import { detectLeaks, DEFAULT_DETECTION_CONFIG } from './leaks';
 import type { LeakSummary } from './leaks';
 import type { Lead } from './parser';
 
@@ -137,5 +137,44 @@ describe('detectLeaks', () => {
     expect(result.slowReply).toBe(2); // L2 (25h) + L3 (96h)
     expect(result.noFollowUp).toBe(2); // L3 (contacted) + L4 (qualified)
     expect(result.staleQuote).toBe(1);
+  });
+
+  describe('DetectionConfig', () => {
+    it('defaults to 24h / 7d when no config is passed', () => {
+      expect(DEFAULT_DETECTION_CONFIG).toEqual({ slowReplyHours: 24, staleQuoteDays: 7 });
+    });
+
+    it('honours a stricter slowReplyHours', () => {
+      // 10h reply: not slow at the 24h default, slow at 8h
+      const leads = [baseLead({
+        created_at: '2024-01-01T10:00:00Z',
+        last_contact_at: '2024-01-01T20:00:00Z',
+      })];
+      expect(detectLeaks(leads, now).leads[0]!.leaks).not.toContain('slow_reply');
+      expect(
+        detectLeaks(leads, now, { slowReplyHours: 8, staleQuoteDays: 7 }).leads[0]!.leaks,
+      ).toContain('slow_reply');
+    });
+
+    it('honours a looser slowReplyHours', () => {
+      // 25h reply: slow at the default, fine at 48h
+      const leads = [baseLead({
+        created_at: '2024-01-01T10:00:00Z',
+        last_contact_at: '2024-01-02T11:00:00Z',
+      })];
+      expect(detectLeaks(leads, now).leads[0]!.leaks).toContain('slow_reply');
+      expect(
+        detectLeaks(leads, now, { slowReplyHours: 48, staleQuoteDays: 7 }).leads[0]!.leaks,
+      ).not.toContain('slow_reply');
+    });
+
+    it('honours staleQuoteDays', () => {
+      // qualified, last contact 5 days before `now`
+      const leads = [baseLead({ status: 'qualified', last_contact_at: '2024-01-05T10:00:00Z' })];
+      expect(detectLeaks(leads, now).leads[0]!.leaks).not.toContain('stale_quote');
+      expect(
+        detectLeaks(leads, now, { slowReplyHours: 24, staleQuoteDays: 3 }).leads[0]!.leaks,
+      ).toContain('stale_quote');
+    });
   });
 });

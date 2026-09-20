@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseLeadsCSV } from './parser';
+import { detectLeaks } from './leaks';
 
 describe('parseLeadsCSV', () => {
   it('parses canonical CSV correctly', () => {
@@ -66,5 +67,34 @@ L6,Unknown Status,test@test.com,super-hot`;
       row: 1,
       message: expect.stringContaining('status')
     }));
+  });
+
+  // Regression: both columns were in HEADER_MAP but never written to the Lead,
+  // so every parsed lead looked like no_reply and slow_reply/no_follow_up/
+  // stale_quote were unreachable through the CSV path.
+  it('preserves last_contact_at and next_follow_up_at', () => {
+    const csv = `lead_id,customer_name,contact,status,last_contact_at,next_follow_up_at
+L7,Followed Up,test@test.com,contacted,2024-01-02T11:00:00Z,2024-01-09T10:00:00Z`;
+    const result = parseLeadsCSV(csv);
+    expect(result.leads[0]!.last_contact_at).toBe('2024-01-02T11:00:00Z');
+    expect(result.leads[0]!.next_follow_up_at).toBe('2024-01-09T10:00:00Z');
+  });
+
+  it('leaves the date fields undefined when absent or blank', () => {
+    const csv = `lead_id,customer_name,contact,last_contact_at
+L8,No Dates,test@test.com,`;
+    const result = parseLeadsCSV(csv);
+    expect(result.leads[0]!.last_contact_at).toBeUndefined();
+    expect(result.leads[0]!.next_follow_up_at).toBeUndefined();
+  });
+
+  it('feeds parsed dates into leak detection end to end', () => {
+    const csv = `lead_id,created_at,customer_name,contact,status,last_contact_at
+L9,2024-01-01T10:00:00Z,Slow Reply,test@test.com,contacted,2024-01-02T11:00:00Z`;
+    const result = parseLeadsCSV(csv);
+    const summary = detectLeaks(result.leads, new Date('2024-01-10T10:00:00Z'));
+    // 25h between created_at and last_contact_at
+    expect(summary.leads[0]!.leaks).toContain('slow_reply');
+    expect(summary.leads[0]!.leaks).not.toContain('no_reply');
   });
 });

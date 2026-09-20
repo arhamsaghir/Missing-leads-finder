@@ -131,5 +131,10 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.ts',
+    // Web app tests only. `api/` and `packages/db` are integration suites that
+    // need a node environment and a running local Supabase, so they have their
+    // own configs and scripts (test:api / test:db). Without this, `npm test`
+    // would sweep them up and fail on any machine without Docker running.
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

@@ -36,6 +36,8 @@ src/**/*.js.map
 src/**/*.d.ts
 src/**/*.d.ts.map
 !src/css.d.ts
+# src/vite-env.d.ts is hand-written (Vite client + VITE_ env typings), not tsc output.
+!src/vite-env.d.ts
 
 .expo/
 .omo/

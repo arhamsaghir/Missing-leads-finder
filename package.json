@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
-    "build:packages": "npm run build --workspace @missed-lead/core && npm run build --workspace @missed-lead/db",
+    "build:packages": "npm run build --workspace @missed-lead/core && npm run build --workspace @missed-lead/db && npm run build --workspace @missed-lead/ui",
     "build": "npm run build:packages && tsc && vite build",
     "typecheck": "npm run build:packages && tsc && tsc --noEmit -p api/tsconfig.json",
     "preview": "vite preview",
@@ -78,6 +78,7 @@
     "@tamagui/use-event": "^1.144.4",
     "@tamagui/use-presence": "^1.144.4",
     "@tamagui/web": "1.144.4",
+    "@supabase/supabase-js": "^2.112.3",
     "jose": "^6.2.10",
     "react": "19.2.3",
     "react-dom": "19.2.3",

@@ -125,12 +125,20 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ['@missed-lead/core', '@missed-lead/ui'],
+    include: ['@missed-lead/core'],
   },
   test: {
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.ts',
+    // The browser Supabase client throws at import if these are unset (by
+    // design — a signed-out prod build with no key should fail loudly). Tests
+    // never hit the network; they mock fetch/getSession. These just let the
+    // module construct.
+    env: {
+      VITE_SUPABASE_URL: 'http://127.0.0.1:54321',
+      VITE_SUPABASE_ANON_KEY: 'test-anon-key',
+    },
     // Web app tests only. `api/` and `packages/db` are integration suites that
     // need a node environment and a running local Supabase, so they have their
     // own configs and scripts (test:api / test:db). Without this, `npm test`

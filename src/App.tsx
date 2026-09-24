@@ -1,121 +1,51 @@
 import { useState } from 'react';
-import { parseLeadsCSV, detectLeaks, LeakSummary, LeadWithLeaks, computeRevenue, RevenueSummary } from '@missed-lead/core';
-import Report from './components/Report';
-import Templates from './components/Templates';
+import { useAuth } from './auth/AuthProvider';
+import { SignIn } from './components/SignIn';
+import { SourcesDashboard } from './components/SourcesDashboard';
+import { CsvAnalyzer } from './components/CsvAnalyzer';
 import './styles.css';
 
+/**
+ * The app shell and session gate.
+ *
+ * No router: the app has two states — signed out and signed in — so a
+ * session-driven conditional render is simpler and lighter than pulling in a
+ * routing library. Signed in, the owner gets the live connections dashboard
+ * (the Phase 2b value) with the v1 CSV analyzer still reachable as backfill.
+ */
 function App() {
-  const [csvText, setCsvText] = useState('');
-  const [defaultTicket, setDefaultTicket] = useState(25000);
-  const [report, setReport] = useState<{ summary: LeakSummary; revenue: RevenueSummary; leads: LeadWithLeaks[] } | null>(null);
-  const [errors, setErrors] = useState<string[]>([]);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const { session, loading, signOut } = useAuth();
+  const [view, setView] = useState<'connections' | 'csv'>('connections');
 
-  const handleAnalyze = () => {
-    if (!csvText.trim()) {
-      setErrors(['Please paste CSV data or load sample data']);
-      return;
-    }
-    setErrors([]);
-    setWarnings([]);
+  if (loading) {
+    return (
+      <div className="app">
+        <main className="app-main">
+          <p>Loading…</p>
+        </main>
+      </div>
+    );
+  }
 
-    const result = parseLeadsCSV(csvText);
-    const leakSummary = detectLeaks(result.leads);
-    const revenueSummary = computeRevenue(leakSummary.leads, leakSummary, defaultTicket);
-
-    setReport({ summary: leakSummary, revenue: revenueSummary, leads: leakSummary.leads });
-    setErrors(result.errors.map((e) => e.message));
-    setWarnings(result.warnings.map((w) => w.message));
-  };
-
-  const handleLoadSample = async () => {
-    try {
-      const response = await fetch('/src/data/sample.csv');
-      const text = await response.text();
-      setCsvText(text);
-      setErrors([]);
-      setWarnings([]);
-    } catch {
-      setErrors(['Failed to load sample data']);
-    }
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setCsvText(event.target?.result as string);
-      };
-      reader.readAsText(file);
-    }
-  };
+  if (!session) return <SignIn />;
 
   return (
     <div className="app">
-      <header className="app-header">
+      <header className="app-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>Missed Lead Revenue Finder</h1>
+        <nav style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button onClick={() => setView('connections')} disabled={view === 'connections'}>
+            Connections
+          </button>
+          <button onClick={() => setView('csv')} disabled={view === 'csv'}>
+            CSV analyzer
+          </button>
+          <button onClick={() => void signOut()}>Sign out</button>
+        </nav>
       </header>
 
       <main className="app-main">
-        <section className="input-section">
-          <div className="input-group">
-            <label htmlFor="csv-input">Paste CSV or upload file</label>
-            <textarea
-              id="csv-input"
-              value={csvText}
-              onChange={(e) => setCsvText(e.target.value)}
-              placeholder="lead_id,created_at,customer_name,contact,source,status,last_contact_at,next_follow_up_at,estimated_value,notes
-L1,2024-01-01,John Doe,john@example.com,Web,new,,,50000,Interested"
-              rows={8}
-            />
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              onChange={handleFileUpload}
-              className="file-input"
-            />
-          </div>
-
-          <div className="controls-row">
-            <div className="input-group">
-              <label htmlFor="default-ticket">Default average ticket (cents)</label>
-              <input
-                id="default-ticket"
-                type="number"
-                value={defaultTicket}
-                onChange={(e) => setDefaultTicket(parseInt(e.target.value) || 25000)}
-                min="0"
-              />
-            </div>
-            <div className="button-group">
-              <button onClick={handleLoadSample} className="btn-secondary">Load sample data</button>
-              <button onClick={handleAnalyze} className="btn-primary">Analyze</button>
-            </div>
-          </div>
-
-          {(errors.length > 0 || warnings.length > 0) && (
-            <div className="messages">
-              {errors.map((err, i) => (
-                <div key={i} className="error">{err}</div>
-              ))}
-              {warnings.map((warn, i) => (
-                <div key={i} className="warning">{warn}</div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {report && (
-          <>
-            <Report
-              summary={report.summary}
-              revenue={report.revenue}
-              leads={report.leads}
-            />
-            <Templates leads={report.leads} />
-          </>
-        )}
+        {view === 'connections' ? <SourcesDashboard /> : <CsvAnalyzer />}
       </main>
     </div>
   );
